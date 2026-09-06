@@ -1,18 +1,173 @@
 # OmenMon Reborn 8BCA
 
-**Working fan control, real fan RPM and a real CPU temperature for the HP OMEN 16
-(16-xf0xxx, baseboard `8BCA`, Ryzen 7040HS series) on Windows.**
+Fan control, fan speed and temperature monitoring for one specific HP OMEN laptop,
+where the manufacturer's own software and the general-purpose tools all get it wrong.
 
-A fork of [seakyy/OmenMon-Reborn](https://github.com/seakyy/OmenMon-Reborn), which is
-itself a fork of [OmenMon](https://omenmon.github.io/) by Piotr Szczepański.
-
-If you own an OMEN 16-xf0xxx and OmenMon shows you a fan speed near 50 RPM, a CPU
-temperature that never moves under load, or fan settings that appear to do nothing —
-this fork is about exactly that machine. If you own something else, start upstream;
-what is written below is specific to one board and is documented so you can repeat the
-method, not copy the numbers.
+<p align="center">
+  <img src="docs/screenshot.jpg" alt="OmenMon Reborn 8BCA main window" width="420">
+</p>
 
 ---
+
+## ⚠️ Read this before installing
+
+**This build is tuned for exactly one machine:**
+
+| | |
+|---|---|
+| Model | HP OMEN Gaming Laptop **16-xf0079ng** (product **84S07EA**) |
+| Motherboard | **`8BCA`** |
+| CPU | AMD Ryzen 9 7945HS (or the 7840HS in the same chassis) |
+| BIOS | F.31 / F.32 |
+| OS | Windows 10 or 11, 64-bit |
+
+**Check your motherboard before you install anything.** Open PowerShell and run:
+
+```powershell
+Get-CimInstance Win32_BaseBoard | Select-Object Product
+```
+
+**If that does not print `8BCA`, do not use this build.** Use
+[OmenMon-Reborn](https://github.com/seakyy/OmenMon-Reborn) instead — it detects unknown
+hardware and configures itself safely. This fork is the opposite: every value in it was
+measured on one laptop and hard-wired.
+
+### Why it can actually damage another laptop
+
+This is not boilerplate. There are three concrete ways this build can let a different
+machine overheat:
+
+1. **The safety net was removed.** Upstream ships an auto-calibration wizard that
+   probes unknown hardware and works out a safe configuration. It is deleted here,
+   because on this board it produced confidently wrong answers. On your board there is
+   now nothing to catch a wrong guess.
+2. **The fans are set to run slowly.** The default profile is *Silent*, with a floor of
+   1700 rpm and no increase until 52 °C. That was measured as safe on this chassis with
+   this cooler. A machine with a hotter CPU or a weaker cooler will run hot at those
+   settings.
+3. **The CPU temperature may read wrong, and the fans follow it.** Temperature comes
+   from the AMD die sensor. On an Intel machine that source is unavailable, so it falls
+   back to the laptop's own sensor — which on some HP boards reports a number that never
+   changes. Fan curves driven by a temperature that cannot rise will not spin the fans
+   up. **This is the dangerous combination**: quiet fans, a wrong temperature, and no
+   calibration to notice.
+
+There is also a CPU power limit set here (45 W sustained by default, up to 54 W), chosen
+for this processor.
+
+Even on the right board this software talks directly to hardware the manufacturer did
+not document. It is provided with no warranty of any kind — see the licence. If your
+fans ever behave strangely, set the profile to **Performance** and reboot; the firmware
+takes fan control back on its own after about two minutes.
+
+---
+
+## Installation
+
+### 1. Install PawnIO
+
+OmenMon needs kernel-level access to read sensors and set fan speeds. It uses
+**[PawnIO](https://pawnio.eu/)** for this — a small, Microsoft-signed driver, so
+Windows Defender will not object to it.
+
+Download and run the installer from **<https://pawnio.eu/>**. Nothing to configure.
+
+### 2. Download this program
+
+Take the latest zip from the [Releases](../../releases) page and unpack it anywhere you
+like — for example `C:\Program Files\OmenMon Reborn 8BCA`. There is no installer.
+
+### 3. Run it as administrator
+
+Right-click `OmenMon.exe` → **Run as administrator**. Reading the sensors and setting
+fan speeds both require it; without administrator rights the program starts but shows
+nothing useful.
+
+To have it start automatically with Windows, tick **Start with Windows** at the bottom
+of the window. It registers a scheduled task, which is what lets it start elevated
+without a prompt every time.
+
+### Requirements, in full
+
+| | |
+|---|---|
+| Operating system | Windows 10 or 11, 64-bit |
+| Driver | [PawnIO](https://pawnio.eu/) — required |
+| Runtime | .NET Framework 4.8 (already present on Windows 10 1903 and later) |
+| Rights | Administrator |
+| Hardware | HP OMEN 16-xf0xxx, motherboard `8BCA` — see the warning above |
+
+### Close HP's own software
+
+OMEN Gaming Hub controls the same fans through the same interface. Running both at once
+means they fight over it. Close it, or set it not to start with Windows.
+
+---
+
+## Using it
+
+**History** — the last ten minutes of temperatures and fan speeds. Useful for seeing
+whether the fans actually respond when the machine heats up.
+
+**Sensors** — current fan speed in rpm and temperature in °C, for CPU and GPU.
+
+**Fan profile** — three profiles to choose from:
+
+| Profile | For |
+|---|---|
+| **Silent** | Everyday use. Fans stay at 1700 rpm until 52 °C. The default. |
+| **Default** | A middle setting; fans come up earlier. |
+| **Performance** | Gaming and sustained load. Loud, and the coolest. |
+
+Pick one and it applies immediately. The graph below shows that profile's curve, and you
+can edit it directly: **left-click** to add a point, **drag** to move one,
+**right-click** a point to remove it. Press **Save curve** to keep the change. **+**
+adds a profile of your own; the three above cannot be deleted.
+
+The number at the right (`120"`) counts down the firmware's own timer. The program keeps
+resetting it — that is normal, and it is why the fans revert to automatic if the program
+stops.
+
+**Power** — sets the Windows power mode and the CPU wattage together, so the two cannot
+contradict each other. **Eco** is the default. **Custom** lets you set the sustained
+wattage yourself, with the boost and peak limits derived from it.
+
+**Keyboard Backlight Colour** — pick a zone (or *All zones*), set the colour with the
+sliders, and **Save** it under a name.
+
+**System Status** — motherboard, BIOS date, power state and current readings. The text
+can be selected and copied, which is what to include in a bug report.
+
+Everything you set is remembered and reapplied at the next start.
+
+---
+
+## If something goes wrong
+
+**The fans are stuck loud, or stuck off.** Choose a different profile. If that does not
+help, close the program and reboot — the firmware takes fan control back by itself after
+about two minutes.
+
+**"Failed to acquire embedded controller exclusive lock."** Something else is talking to
+the same hardware, usually OMEN Gaming Hub. Close it. The message names the program it
+was competing with, and is written to `OmenMon-error.log` next to `OmenMon.xml`.
+
+**Temperature or fan speed shows nothing.** Almost always PawnIO not being installed, or
+the program not running as administrator.
+
+**Anything else.** Every error window has a **Copy** button that puts the whole report,
+including your motherboard and BIOS version, on the clipboard. Paste that into an issue.
+
+Logs are written next to `OmenMon.xml`: `OmenMon-error.log` for faults,
+`OmenMon-telemetry.csv` for the temperature and fan-speed history.
+
+---
+---
+
+# Technical notes
+
+*Everything below is for people working on the code, or adapting it to a different
+laptop. You do not need any of it to use the program.*
 
 ## The three findings
 
@@ -187,16 +342,6 @@ element `<OmenMon>`, the scheduled-task names and the mutex names from it, so re
 it would orphan an existing configuration. Only the display identity changes, through
 `Config.DisplayName`.
 
----
-
-## Requirements
-
-- Windows 10/11, x64
-- [PawnIO](https://pawnio.eu/) installed — its kernel driver is Microsoft-signed, so
-  Defender stays quiet
-- Administrator rights: EC and SMN access both require elevation
-- .NET Framework 4.8
-
 ## Build
 
 ```
@@ -211,10 +356,6 @@ msbuild OmenMon.csproj /p:Configuration=Release /p:Platform=x64
 | `OmenMon.exe -Probe` | WMI + BIOS + EC snapshot as Markdown |
 | `OmenMon.exe -Ec` | Live EC monitor |
 | `OMENMON_BIOSTRACE=1` | Logs every WMI `Send()` with its arguments and return code |
-
-`OmenMon-error.log` and `OmenMon-telemetry.csv` are written next to `OmenMon.xml`.
-
----
 
 ## Adapting this to your own laptop
 
@@ -299,6 +440,10 @@ the terms of the
 as published by the [Free Software Foundation](https://www.fsf.org/). The full text is
 in [LICENSE.md](LICENSE.md); the GPLv3 change record is in
 [MODIFICATIONS.md](MODIFICATIONS.md).
+
+It is distributed **without any warranty** — without even the implied warranty of
+merchantability or fitness for a particular purpose. It writes to undocumented hardware
+interfaces; you run it at your own risk.
 
 **OmenMon** builds upon the work of several other projects; see the
 [acknowledgements](https://omenmon.github.io/more#acknowledgements).

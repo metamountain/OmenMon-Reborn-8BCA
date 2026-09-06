@@ -183,15 +183,48 @@ namespace OmenMon.AppGui {
 
             const int W = 560;                 // section content width
             const int GX = 16;                 // form left margin
-            const int HDR = 30;                // gap from section top to first control
+            const int HDR = 26;                // gap from section top to first control
+            const int GAP = 8;                 // gap between stacked sections
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
+
+            // The whole window has to fit within MAX_WINDOW_H, title bar included -- six
+            // stacked sections had grown it to 1272 px, taller than the work area on a
+            // 1152 px screen, so the bottom of it was simply unreachable.
+            //
+            // Every section except the two graphs is a fixed height, so those are
+            // budgeted first and the graphs divide whatever is left. That keeps the
+            // constraint true by construction: move a control and the graphs absorb it,
+            // instead of the window silently growing past the screen again.
+            const int MAX_WINDOW_H = 960;
+
+            const int H_TMP = HDR + 114;   // hero readout: second row at r1 = HDR+64, 46 tall
+            const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
+            const int H_KBD = HDR + 190;   // keyboard, sliders, preset row, hex field
+            const int H_SYS = HDR + 78;    // autostart, exit, three lines of system info
+
+            // Chrome is the non-client height of a FixedSingle form with a caption
+            int chrome = SystemInformation.CaptionHeight
+                + 2 * SystemInformation.FixedFrameBorderSize.Height;
+
+            // 7 gaps (above each of the six sections, plus one below the last); the
+            // constant 52 is the fixed part of the two graph sections -- 2 * HDR for
+            // their headers, less the 4 px the chart sits above its group bottom, plus
+            // the 56 px of profile row and help text above the curve
+            int graphBudget = MAX_WINDOW_H - chrome - 7 * GAP - 2 * HDR - 52
+                - H_TMP - H_PWR - H_KBD - H_SYS;
+
+            // Never collapse the graphs to nothing: if the fixed sections ever grow past
+            // the budget, overflow the window rather than ship two unreadable slivers
+            if(graphBudget < 192) graphBudget = 192;
+            int hChart = graphBudget / 2;
+            int hCurve = graphBudget - hChart;
 
 #region Section: Graph
             this.Chart.Location = new Point(6, HDR - 8);
-            this.Chart.Size = new Size(W - 12, 196);
+            this.Chart.Size = new Size(W - 12, hChart);
             this.Chart.SampleSeconds = Math.Max(1, Config.UpdateMonitorInterval);
             this.GrpChart.Controls.Add(this.Chart);
-            this.GrpChart.Size = new Size(W, HDR + 192);
+            this.GrpChart.Size = new Size(W, HDR + hChart - 4);
             this.GrpChart.TabStop = false;
             this.GrpChart.Text = "History";
 #endregion
@@ -211,7 +244,7 @@ namespace OmenMon.AppGui {
             this.LblHdrTmp.TextAlign = ContentAlignment.MiddleRight;
             this.LblHdrTmp.Text = "°C";
 
-            int r0 = HDR + 22, r1 = r0 + 52;
+            int r0 = HDR + 18, r1 = r0 + 46;
             this.LblFan0Cap.Font = capFont; this.LblFan0Cap.ForeColor = cCap;
             this.LblFan0Cap.Location = new Point(18, r0 + 12);
             this.LblFan0Cap.Size = new Size(60, 30);
@@ -261,7 +294,7 @@ namespace OmenMon.AppGui {
             this.GrpTmp.Controls.Add(this.LblFan1Val);
             this.GrpTmp.Controls.Add(this.LblTmp1Val);
             this.GrpTmp.Controls.Add(this.PnlTmpHidden);
-            this.GrpTmp.Size = new Size(W, r1 + 58);
+            this.GrpTmp.Size = new Size(W, H_TMP);
             this.GrpTmp.TabStop = false;
             this.GrpTmp.Text = "Sensors";
 #endregion
@@ -309,7 +342,7 @@ namespace OmenMon.AppGui {
 
             // Inline curve editor, drawn like the history graph above
             this.Curve.Location = new Point(6, fa + 50);
-            this.Curve.Size = new Size(W - 12, 198);
+            this.Curve.Size = new Size(W - 12, hCurve);
 
             // Everything else the fan logic still reads is kept alive but off-screen:
             // the five mode radios (Profile is forced on), the constant-speed sliders,
@@ -326,7 +359,7 @@ namespace OmenMon.AppGui {
             this.GrpFan.Controls.Add(this.BtnCurveEdit);
             this.GrpFan.Controls.Add(this.LblFanCountdown);
             this.GrpFan.Controls.Add(this.Curve);
-            this.GrpFan.Size = new Size(W, fa + 254);
+            this.GrpFan.Size = new Size(W, fa + hCurve + 56);
             this.GrpFan.TabStop = false;
             this.GrpFan.Text = "Fan profile";
 #endregion
@@ -398,7 +431,7 @@ namespace OmenMon.AppGui {
             this.GrpPwr.Controls.Add(this.RdoPwrCustom);
             this.GrpPwr.Controls.Add(this.NumPwrWatt);
             this.GrpPwr.Controls.Add(this.LblPwrHint);
-            this.GrpPwr.Size = new Size(W, HDR + 76);
+            this.GrpPwr.Size = new Size(W, H_PWR);
             this.GrpPwr.TabStop = false;
             this.GrpPwr.Text = "Power";
 #endregion
@@ -419,11 +452,11 @@ namespace OmenMon.AppGui {
             this.CmbKbdZone.SelectedIndexChanged += EventKbdZoneSelect;
 
             this.PicKbd.Location = new Point(40, HDR + 32);
-            this.PicKbd.Size = new Size(W - 80, 92);
+            this.PicKbd.Size = new Size(W - 80, 52);
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
-            int ry = HDR + 140;
+            int ry = HDR + 92;
             this.LblKbdR.Text = "R"; this.LblKbdR.Font = capFont; this.LblKbdR.ForeColor = cCap;
             this.LblKbdR.Location = new Point(18, ry + 4); this.LblKbdR.Size = new Size(16, 20);
             this.LblKbdG.Text = "G"; this.LblKbdG.Font = capFont; this.LblKbdG.ForeColor = cCap;
@@ -439,7 +472,7 @@ namespace OmenMon.AppGui {
             this.PnlKbdSwatch.Size = new Size(24, 24);
             this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
 
-            int py = ry + 44;
+            int py = ry + 40;
             this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbKbdColorPreset.Location = new Point(18, py);
             this.CmbKbdColorPreset.Size = new Size(132, 26);
@@ -478,7 +511,7 @@ namespace OmenMon.AppGui {
             this.GrpKbd.Controls.Add(this.BtnKbdColorPresetRen);
             this.GrpKbd.Controls.Add(this.BtnKbdColorPresetDel);
             this.GrpKbd.Controls.Add(this.TxtKbdColorVal);
-            this.GrpKbd.Size = new Size(W, py + 66);
+            this.GrpKbd.Size = new Size(W, H_KBD);
             this.GrpKbd.TabStop = false;
             this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&&", " ").Replace("&", "");
 #endregion
@@ -536,13 +569,12 @@ namespace OmenMon.AppGui {
             this.GrpSys.Controls.Add(this.ChkAutoStart);
             this.GrpSys.Controls.Add(this.BtnMenu);
             this.GrpSys.Controls.Add(this.RtfSysInfo);
-            this.GrpSys.Size = new Size(W, HDR + 76);
+            this.GrpSys.Size = new Size(W, H_SYS);
             this.GrpSys.TabStop = false;
             this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&&", " ").Replace("&", "");
 #endregion
 
             // Stack the sections with a consistent gap
-            const int GAP = 12;
             this.GrpChart.Location = new Point(GX, GAP);
             this.GrpTmp.Location = new Point(GX, this.GrpChart.Bottom + GAP);
             this.GrpFan.Location = new Point(GX, this.GrpTmp.Bottom + GAP);
