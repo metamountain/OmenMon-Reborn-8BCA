@@ -95,6 +95,7 @@
     <Compile Include="App\Gui\GuiKbd.cs" />
     <Compile Include="App\Gui\GuiTheme.cs" />
     <Compile Include="App\Gui\GuiTray.cs" />
+    <Compile Include="Driver\Nvml.cs" />
     <Compile Include="Driver\PawnIo.cs" />
     <Compile Include="Driver\PawnIoAmd.cs" />
     <Compile Include="Driver\Ring0.cs" />

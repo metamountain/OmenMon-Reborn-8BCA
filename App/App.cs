@@ -196,6 +196,9 @@ namespace OmenMon {
                 // Release the AMD SMN module handle, if one was ever opened
                 OmenMon.Driver.PawnIoAmd.Close();
 
+                // Release the NVML handle, if the GPU library was ever opened
+                OmenMon.Driver.Nvml.Close();
+
                 // Free the console, if running as a CLI app
                 if(Cli.IsInitialized)
                     Cli.Close();

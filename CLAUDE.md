@@ -78,6 +78,33 @@ The module is embedded as `OmenMon.AMDFamily17.bin` and also accepted side-by-si
 It is byte-identical to PawnIO.Modules release 0.2.11, the same release the existing
 `LpcACPIEC.bin` came from.
 
+### GPU temperature comes from NVML, not from the EC
+
+`Driver/Nvml.cs`. `nvml.dll` ships with the NVIDIA driver, lives in `System32`, is what
+`nvidia-smi` itself calls, and needs neither a kernel driver nor elevation.
+`nvmlDeviceGetTemperature(dev, NVML_TEMPERATURE_GPU)` gives the die temperature.
+
+`GPTM` (EC `0xB7`) does **not** track this GPU. Measured with an RTX 4070 Laptop held at
+100% and ~79 W:
+
+| die | GPTM | delta |
+|---|---|---|
+| 51 °C | 26 °C | −25 |
+| 65 °C | 28 °C | −37 |
+| 75 °C | 33 °C | −42 |
+
+Die rose 42 °C (34 → 76); `GPTM` moved 7 °C, and the gap *widens* with heat, so it is
+not an offset that could be corrected. Unlike `CPUT` it is not string data — it is a
+real sensor, just not one that measures anything useful for fan control.
+
+Fan programs key on `max(CPU, GPU)`. At the 65 °C sample that maximum was 48 °C, below
+the Silent profile's 52 °C threshold, so **the fans stayed at the 1700 rpm floor with
+the GPU at 65 °C on 79 W**. The CPU only rescued it because a browser was generating the
+load; a game would not have.
+
+Not median-filtered, unlike the CPU path: NVML is already stable and any smoothing would
+delay a rise, which is the wrong way to err here.
+
 ### Everything else CPU-temperature-shaped on this board is a string
 
 **This is the most important fact in this file.** `8BCA` has firmware string data
@@ -114,6 +141,7 @@ that support them are still online and still persuasive.
 | Fan setpoints live at EC `0x11` (CPU) / `0x14` (GPU) | Inferred from calibration-report EC dumps: those bytes tracked the load sweep | They correlate because they *mirror* the level the WMI path set, not because writing them controls anything. The WMI path was already working. |
 | `FanLevelReg1` should be `0x14` instead of `0x12` | Same inference | Moot — the EC fan-level path is not used. |
 | CPU temperature was fixed by disabling `CPUT` | 6 idle samples reading 44-45 against a die of 41 | Burn-in disproved it: 44 °C reported while the die was at 66.8, and 33 while the die was at 48.5. **Idle agreement is not agreement.** |
+| `GPTM` (EC `0xB7`) is a valid GPU sensor | It moved a little, the idle value looked right, and the fan curves appeared to work | A 79 W GPU load: die 34 → 76 °C, `GPTM` 26 → 33 °C, gap widening from 25 to 42 °C. Same trap as the row above, found only because the user asked whether the GPU had ever been checked. It had not. |
 
 ## Still open
 
@@ -145,6 +173,10 @@ that support them are still online and still persuasive.
   undiagnosable for hours.
 - **Fan programs are step functions.** `GetTemperatureLevel` returns the highest
   threshold ≤ temperature. There is no interpolation.
+- **Both temperature sources are outside the EC now**, and both self-disable rather than
+  return a wrong number. Before trusting any new sensor, load the machine and check it
+  against an independent reading — both of this board's built-in ones passed at idle and
+  failed under load.
 - Deploy with `C:\Users\omen\omen-deploy.cmd` (self-elevating). The running app is
   elevated, so an unelevated session cannot overwrite the exe.
 

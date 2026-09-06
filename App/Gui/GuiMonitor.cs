@@ -316,6 +316,26 @@ namespace OmenMon.AppGui {
                     : (int) Math.Round(die);
             }
 
+            // Same treatment for the GPU, and for a more urgent reason. The EC sensor
+            // GPTM (0xB7) does not follow this GPU: measured under a sustained 79 W load,
+            // the die went 34 → 76 °C while GPTM moved 26 → 33 °C, the gap widening from
+            // 25 to 42 °C as it heated. Not a fixed offset — it barely responds.
+            //
+            // That matters more than the CPU case did. Fan programs key on
+            // max(CPU, GPU), so a GPU term that cannot rise contributes nothing: during
+            // that test the fans sat at the 1700 rpm Silent floor with the GPU at 65 °C,
+            // because the only sensor that moved was the CPU at 48 °C, still under the
+            // profile's 52 °C threshold. A GPU-heavy, CPU-light workload — which is to
+            // say a game — is exactly the case this gets wrong.
+            //
+            // Deliberately not median-filtered, unlike the CPU. NVML already reports a
+            // stable die temperature with none of Zen's boost spikes, and any smoothing
+            // here would delay a rise — which is the wrong direction to err for the part
+            // that has just been shown to under-report.
+            int gpuDie;
+            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie) && gpuDie > 0 && gpuDie < 125)
+                gpu = gpuDie;
+
             s.CpuTemp = cpu;
             s.GpuTemp = gpu;
             s.MaxTemp = plat.GetMaxTemperature(false); // temps already refreshed above
@@ -323,6 +343,7 @@ namespace OmenMon.AppGui {
             // GetMaxTemperature() only sees the EC/BIOS sensors, so a die reading that
             // outruns them has to be folded in by hand — the fan programs key off this
             if(s.CpuTemp > s.MaxTemp) s.MaxTemp = s.CpuTemp;
+            if(s.GpuTemp > s.MaxTemp) s.MaxTemp = s.GpuTemp;
 
             // The dynamic-icon warm/cool background needs the fan mode even with the form
             // hidden, so it is always sampled.

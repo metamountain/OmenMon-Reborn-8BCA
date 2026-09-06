@@ -34,7 +34,7 @@ measured on one laptop and hard-wired.
 
 ### Why it can actually damage another laptop
 
-This is not boilerplate. There are three concrete ways this build can let a different
+This is not boilerplate. There are four concrete ways this build can let a different
 machine overheat:
 
 1. **The safety net was removed.** Upstream ships an auto-calibration wizard that
@@ -51,6 +51,14 @@ machine overheat:
    changes. Fan curves driven by a temperature that cannot rise will not spin the fans
    up. **This is the dangerous combination**: quiet fans, a wrong temperature, and no
    calibration to notice.
+
+4. **The GPU temperature has to come from the GPU.** This laptop's own GPU sensor was
+   measured against the card's die sensor under load and does not follow it — the die
+   reached 76 °C while the laptop reported 33 °C. This build therefore reads the
+   temperature from the NVIDIA driver instead. On a machine with an AMD or Intel GPU
+   there is no such source, so it falls back to the same sensor that was just shown to
+   be useless here. A 140 W GPU whose temperature the fan curve cannot see is the
+   worst case in this list.
 
 There is also a CPU power limit set here (45 W sustained by default, up to 54 W), chosen
 for this processor.
@@ -109,7 +117,9 @@ means they fight over it. Close it, or set it not to start with Windows.
 **History** — the last ten minutes of temperatures and fan speeds. Useful for seeing
 whether the fans actually respond when the machine heats up.
 
-**Sensors** — current fan speed in rpm and temperature in °C, for CPU and GPU.
+**Sensors** — current fan speed in rpm and temperature in °C. Both temperatures are read
+from the processors themselves — the AMD die sensor and the NVIDIA driver — not from the
+laptop's own sensors, which were measured against them and found to be wrong.
 
 **Fan profile** — three profiles to choose from:
 
@@ -169,7 +179,7 @@ Logs are written next to `OmenMon.xml`: `OmenMon-error.log` for faults,
 *Everything below is for people working on the code, or adapting it to a different
 laptop. You do not need any of it to use the program.*
 
-## The three findings
+## The four findings
 
 ### 1. Fan control was never broken
 
@@ -290,6 +300,41 @@ spikes ~30 °C for a single sample at idle. The EC value had been smoothed in fi
 A median-of-3 is applied before the value reaches the fan programs, or the curves
 chase every transient.
 
+### 4. The GPU sensor does not track the GPU either
+
+`GPTM` (EC `0xB7`) had been assumed good, because the fan curves appeared to work and
+the idle number looked sensible. Both of those are the same trap as finding 3, and it
+was never actually tested under load. It is now.
+
+An RTX 4070 Laptop was held at 100% utilisation and ~79 W with a WebGL fragment-shader
+load, with `nvidia-smi` as the independent reference:
+
+| time | GPU die | OmenMon `GPTM` | delta | CPU | **max() the fan curve used** |
+|---|---|---|---|---|---|
+| 18:39:18 | 51 °C | 26 °C | −25 | 30 °C | 34 °C |
+| 18:40:22 | 65 °C | 28 °C | −37 | 48 °C | **48 °C** |
+| 18:41:28 | 75 °C | 33 °C | −42 | 62 °C | 62 °C |
+
+The die rose 42 °C (34 → 76); `GPTM` moved 7 °C. It is not a fixed offset — **the gap
+widens as the GPU heats**, from 25 to 42 °C, which is the signature of a sensor reading
+somewhere far from the die with a large thermal lag. Unlike `CPUT` it is not string
+data; it is a real sensor that is simply useless for this purpose.
+
+**Why this is worse than finding 3.** Fan programs run on `max(CPU, GPU)`. At 18:40:22
+that maximum was 48 °C — below the Silent profile's 52 °C threshold — while the GPU sat
+at 65 °C on 79 W. **The fans stayed at the 1700 rpm floor.** In this test the CPU
+eventually rose enough to trigger the fans, but only because a browser was driving the
+load. A GPU-heavy, CPU-light workload — which is to say a game — never gets there.
+
+The fix is the same shape as the CPU one: ask the part itself. `nvml.dll` ships with the
+NVIDIA driver, sits in `System32`, is what `nvidia-smi` itself calls, and needs neither
+a kernel driver nor elevation. `Driver/Nvml.cs` reads `nvmlDeviceGetTemperature` and
+self-disables if the library is missing or the value is implausible.
+
+Deliberately **not** median-filtered, unlike the CPU: NVML already reports a stable die
+temperature with none of Zen's boost spikes, and smoothing would delay a rise — the
+wrong direction to err for the part that was just shown to under-report.
+
 ---
 
 ## Other things learned about this board
@@ -300,9 +345,8 @@ chase every transient.
   want the steps.
 - **Fan levels are in units of 100 RPM.** Level 18 is 1800 RPM. The practical floor on
   this chassis is around 1700; below that the fans stall rather than spin slowly.
-- **Fan curves work off `max(CPU, GPU)`.** Before the die fix the curves were
-  functioning only because `GPTM` (EC `0xB7`) is a valid GPU sensor and the `max()`
-  carried it. The CPU term contributed nothing at all.
+- **Fan curves work off `max(CPU, GPU)`.** Which is why finding 4 matters: with both
+  terms wrong, the curve had nothing real to key on at all.
 - **The EC lock is usually contended by OmenMon itself**, not by another application.
   `Global\Access_EC` is held for a whole `EcExecBatch` sensor pass, and `Ec.cs`'s read
   backoff `Wait()`s while holding it, so a single 600 ms attempt from the UI thread
@@ -324,6 +368,7 @@ chase every transient.
 | Area | Change |
 |---|---|
 | **CPU temperature** | AMD Tctl/Tdie over SMN via a second PawnIO module, median-of-3 smoothed (`Driver/PawnIoAmd.cs`) |
+| **GPU temperature** | NVIDIA die temperature via `nvml.dll` — no kernel driver, no elevation. Unsmoothed, so a rise is never delayed (`Driver/Nvml.cs`) |
 | **Fan RPM** | `BiosLevelMirror` ×100 mapping for `8BCA` (`Library/AutoCal.cs`) |
 | **Fan profiles** | Reduced to Performance / Default / Silent, with `+` to add. The three standard ones cannot be deleted. Selecting one applies immediately — no second click, no hysteresis wait |
 | **Fan curve** | Inline editable: left-click adds a point, right-click removes one, drag to move (`App/Gui/GuiCurveEditor.cs`) |
