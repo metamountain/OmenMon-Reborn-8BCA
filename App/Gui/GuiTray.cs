@@ -668,16 +668,13 @@ namespace OmenMon.AppGui {
                         snap.Mode == BiosData.FanMode.Performance ?
                             GuiIcon.BackgroundType.Warm : GuiIcon.BackgroundType.Cool);
 
-                    // Show temperature in configured unit.
-                    // The dynamic icon uses a custom bitmap font — only the localized °C glyph
-                    // is guaranteed to render. Omit the suffix when Fahrenheit is active rather
-                    // than passing a literal "°F" that may produce garbled characters.
+                    // Show the temperature in the configured unit, digits only.
+                    // The unit glyph is dropped: in a 16 px icon it eats a third of the
+                    // width and says nothing the two digits do not already imply. The
+                    // tray tooltip still spells the unit out in full.
                     int displayTemp = Config.TemperatureUseFahrenheit
                         ? (snap.MaxTemp * 9 / 5) + 32 : snap.MaxTemp;
-                    string unitSuffix = Config.TemperatureUseFahrenheit
-                        ? string.Empty
-                        : Config.Locale.Get(Config.L_UNIT + "Temperature" + Config.LS_CUSTOM_FONT);
-                    this.Icon.Update(Conv.GetString((uint) displayTemp, 2, 10) + unitSuffix);
+                    this.Icon.Update(Conv.GetString((uint) displayTemp, 2, 10));
 
                 }
 
