@@ -108,6 +108,12 @@ namespace OmenMon.AppGui {
                 + Conv.RTF_CF5 + Config.AppVersion + " "
                 + Conv.RTF_CF2 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "MsgWelcome"));
 
+            // Show the active profile's curve in the inline editor
+            EventProfilePicked(this, EventArgs.Empty);
+
+            // Restyle: apply the minimal dark theme over the fully-built control tree.
+            GuiTheme.Apply(this);
+
         }
 
         // Handles component disposal
@@ -210,6 +216,220 @@ namespace OmenMon.AppGui {
         }
 
         // Toggles the keyboard backlight on or off
+        // The three built-in profiles cannot be deleted.
+        private static readonly string[] StandardProfiles = { "Performance", "Default", "Silent" };
+        private static bool IsStandardProfile(string n) {
+            return n != null && Array.Exists(StandardProfiles,
+                s => string.Equals(s, n, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Selecting a profile shows its curve AND applies it straight away — picking
+        // one used to only highlight "Apply", so nothing reached the hardware until a
+        // second click. Run() writes the fan levels unconditionally, so the change is
+        // immediate; no waiting for the next 15 s program tick.
+        private void EventProfilePicked(object sender, EventArgs e) {
+            string name = this.CmbFanProg.SelectedValue as string;
+
+            // At startup the combo may not have a selection yet: the snapshot that
+            // UpdateFan() uses to set it does not exist until the first monitor pass,
+            // and AutoConfig starts the default program asynchronously. Fall back to
+            // the running program, then to the configured default, so the profile and
+            // its curve are always shown rather than coming up blank.
+            if(string.IsNullOrEmpty(name)) {
+                try { name = Context.Op.Program.GetName(); } catch { }
+                if(string.IsNullOrEmpty(name)) name = Config.FanProgramDefault;
+                if(string.IsNullOrEmpty(name) && Config.FanProgram.Count > 0)
+                    name = Config.FanProgram.Keys[0];
+                if(string.IsNullOrEmpty(name)) return;
+                try { this.CmbFanProg.SelectedValue = name; } catch { }
+            }
+
+            this.Curve.LoadProgram(name);
+            this.BtnProfDel.Enabled = !IsStandardProfile(name);
+
+            // Only auto-apply for a real user pick — the constructor calls this too,
+            // and AutoConfig has already started the default profile by then.
+            if(!ReferenceEquals(sender, this.CmbFanProg))
+                return;
+
+            this.RdoFanProg.Checked = true;
+            EventActionFanSet(sender, EventArgs.Empty);
+
+            // Remember it so the next launch starts on this profile
+            UserPrefs.Set(UserPrefs.KeyFanProfile, name);
+
+            // Republish at once so the readouts show the new levels immediately
+            // instead of lagging until the next monitor pass.
+            Context.Monitor?.SampleNow();
+            UpdateFan();
+            UpdateSysMsg("Profile \"" + name + "\" applied.");
+        }
+
+        // Persist the edited curve back into the profile
+        private void EventCurveSave(object sender, EventArgs e) {
+            if(!this.Curve.SaveProgram()) {
+                UpdateSysMsg("No profile selected — nothing to save.");
+                return;
+            }
+            try { Config.Save(); } catch { }
+            string name = this.Curve.ProgramName;
+            try {
+                if(Context.Op.Program.GetName() == name)
+                    lock(Context.Op.HardwareLock) Context.Op.Program.Run(name);
+            } catch { }
+            UpdateSysMsg("Curve saved to profile \"" + name + "\".");
+        }
+
+        // New profile: copies the current curve under a new name
+        private void EventProfileAdd(object sender, EventArgs e) {
+            string name = Gui.ShowPromptInputText("Name for the new fan profile:", "My profile", this);
+            if(string.IsNullOrEmpty(name)) return;
+            if(Config.FanProgram.ContainsKey(name)) {
+                MessageBox.Show(this, "A profile with that name already exists.", "New profile",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            string src = this.CmbFanProg.SelectedValue as string;
+            var levels = new System.Collections.Generic.SortedDictionary<byte, byte[]>();
+            if(src != null && Config.FanProgram.ContainsKey(src))
+                foreach(var kv in Config.FanProgram[src].Level)
+                    levels[kv.Key] = new byte[] { kv.Value[0], kv.Value[1] };
+            FanProgramData baseProg =
+                src != null && Config.FanProgram.ContainsKey(src) ? Config.FanProgram[src] : null;
+            Config.FanProgram[name] = new FanProgramData(name,
+                baseProg != null ? baseProg.FanMode : BiosData.FanMode.Default,
+                baseProg != null ? baseProg.GpuPower : BiosData.GpuPowerLevel.Maximum,
+                levels);
+            try { Config.Save(); } catch { }
+            Context.Menu.Create();
+            SetupFanCtl();
+            try { this.CmbFanProg.SelectedValue = name; } catch { }
+            EventProfilePicked(sender, e);
+            UpdateSysMsg("Profile \"" + name + "\" created.");
+        }
+
+        // Delete a user profile (the three standard ones are protected)
+        private void EventProfileDel(object sender, EventArgs e) {
+            string name = this.CmbFanProg.SelectedValue as string;
+            if(name == null || !Config.FanProgram.ContainsKey(name)) return;
+            if(IsStandardProfile(name)) {
+                MessageBox.Show(this, "\"" + name + "\" is a standard profile and cannot be deleted.",
+                    "Delete profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if(MessageBox.Show(this, "Delete the profile \"" + name + "\"?", "Delete profile",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            Config.FanProgram.Remove(name);
+            try { Config.Save(); } catch { }
+            Context.Menu.Create();
+            SetupFanCtl();
+            EventProfilePicked(sender, e);
+            UpdateSysMsg("Profile \"" + name + "\" deleted.");
+        }
+
+        // Guard so reflecting the current state doesn't re-apply it
+        private bool pwrSyncing;
+
+        // One power preset = Windows power mode + CPU wattage limits, applied together
+        private void EventPwrPreset(object sender, EventArgs e) {
+            if(pwrSyncing) return;
+            RadioButton rb = sender as RadioButton;
+            if(rb == null || !rb.Checked) return;      // only act on the newly-selected one
+
+            this.NumPwrWatt.Enabled = this.RdoPwrCustom.Checked;
+
+            string label = rb == this.RdoPwrEco    ? PowerPresets.Eco
+                         : rb == this.RdoPwrPerf   ? PowerPresets.Performance
+                         : rb == this.RdoPwrCustom ? PowerPresets.Custom
+                                                   : PowerPresets.Balanced;
+
+            PowerPresets.Def d = PowerPresets.Resolve(label, (int) this.NumPwrWatt.Value);
+
+            bool winOk = false;
+            try { winOk = PowrProf.PowerSetActiveOverlayScheme(d.Overlay) == 0; } catch { }
+            SetCpuLimits(d.Pl1, d.Pl2, d.Pl4, label);
+            ShowPwrState(d.WinMode, d.Pl1, d.Pl2, d.Pl4, d.Character, winOk);
+
+            // Remember the choice so the next launch restores it
+            UserPrefs.Set(UserPrefs.KeyPowerPreset, label);
+            if(label == PowerPresets.Custom)
+                UserPrefs.Set(UserPrefs.KeyCustomWatts, (int) this.NumPwrWatt.Value);
+        }
+
+        // Changing the wattage re-applies immediately while Custom is selected
+        private void EventPwrWattChanged(object sender, EventArgs e) {
+            if(pwrSyncing || !this.RdoPwrCustom.Checked) return;
+            EventPwrPreset(this.RdoPwrCustom, EventArgs.Empty);
+        }
+
+        // Spells out, in the section itself, exactly what the active preset did.
+        // The Windows mode line carries its wattage band so it is obvious which
+        // power mode belongs to which CPU limit.
+        private void ShowPwrState(string winMode, byte pl1, byte pl2, byte pl4,
+                                  string character, bool winOk) {
+            string band = pl1 <= 35 ? "≤ 35 W band"
+                        : pl1 >= 50 ? "≥ 50 W band"
+                                    : "36–49 W band";
+            this.LblPwrHint.Text = string.Format(
+                "Windows power mode: {0}  ({1}){2}\nCPU limits: {3} W sustained · {4} W boost · {5} W peak — {6}",
+                winMode, band, winOk ? "" : "  — Windows refused the change",
+                pl1, pl2, pl4, character);
+        }
+
+        // Reflect the stored preset in the selector without re-applying it. The CPU
+        // limits cannot be read back from the BIOS, so the saved preset is the source
+        // of truth; the live Windows overlay is only the fallback on a first run.
+        private void SyncPwrMode() {
+            try {
+                pwrSyncing = true;
+
+                this.NumPwrWatt.Value = Math.Max(this.NumPwrWatt.Minimum,
+                    Math.Min(this.NumPwrWatt.Maximum,
+                        UserPrefs.GetInt(UserPrefs.KeyCustomWatts, 45)));
+
+                string preset = UserPrefs.Get(UserPrefs.KeyPowerPreset, null);
+                if(string.IsNullOrEmpty(preset)) {
+                    Guid cur;
+                    if(PowrProf.PowerGetActualOverlayScheme(out cur) != 0)
+                        cur = PowrProf.OVERLAY_BALANCED;
+                    preset = cur == PowrProf.OVERLAY_EFFICIENCY  ? PowerPresets.Eco
+                           : cur == PowrProf.OVERLAY_PERFORMANCE ? PowerPresets.Performance
+                                                                 : PowerPresets.Balanced;
+                }
+
+                if(preset == PowerPresets.Eco)              this.RdoPwrEco.Checked = true;
+                else if(preset == PowerPresets.Performance) this.RdoPwrPerf.Checked = true;
+                else if(preset == PowerPresets.Custom)      this.RdoPwrCustom.Checked = true;
+                else                                        this.RdoPwrBal.Checked = true;
+
+                this.NumPwrWatt.Enabled = this.RdoPwrCustom.Checked;
+
+                PowerPresets.Def d = PowerPresets.Resolve(preset, (int) this.NumPwrWatt.Value);
+                ShowPwrState(d.WinMode, d.Pl1, d.Pl2, d.Pl4, d.Character, true);
+            } catch { } finally { pwrSyncing = false; }
+        }
+
+        // CPU power limits via the HP BIOS (WMI cmd 0x29). 0xFF means "leave alone".
+        private void SetCpuLimits(byte pl1, byte pl2, byte pl4, string label) {
+            try {
+                BiosData.CpuPowerData d = new BiosData.CpuPowerData();
+                d.Limit1 = pl1; d.Limit2 = pl2; d.Limit4 = pl4;
+                Hw.BiosExec(bios => bios.SetCpuPower(d), Hw.Bios);
+                UpdateSysMsg(string.Format("{0}: CPU {1} W sustained, {2} W boost, {3} W peak",
+                    label, pl1, pl2, pl4));
+            } catch {
+                UpdateSysMsg("CPU power limit call was rejected by the BIOS.");
+            }
+        }
+
+        // "Start with Windows" checkbox -> the GUI logon task
+        private void EventActionAutoStart(object sender, EventArgs e) {
+            try {
+                Hw.TaskSet(Config.TaskId.Gui, !this.ChkAutoStart.Checked);
+                this.ChkAutoStart.Checked = Hw.TaskGet(Config.TaskId.Gui);
+            } catch { }
+        }
+
         private void EventActionBacklight(object sender, EventArgs e) {
 
             if(Kbd != null) // Use the keyboard class
@@ -257,6 +477,29 @@ namespace OmenMon.AppGui {
             // Save the configuration
             Config.Save();
 
+        }
+
+        // Renames the selected color preset
+        private void EventActionColorPresetRen(object sender, EventArgs e) {
+            string old = this.CmbKbdColorPreset.SelectedValue as string;
+            if(string.IsNullOrEmpty(old) || !Config.ColorPreset.ContainsKey(old)) {
+                MessageBox.Show(this, "Select a preset to rename first.", "Rename preset",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            string name = Gui.ShowPromptInputText(
+                Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD + "ColorPresetAdd"), old, this);
+            if(string.IsNullOrEmpty(name) || name == old)
+                return;
+
+            Config.ColorPreset[name] = Config.ColorPreset[old];
+            Config.ColorPreset.Remove(old);
+
+            Context.Menu.Create();
+            this.CmbKbdColorPreset.DataSource = null;
+            UpdateKbd();
+            try { this.CmbKbdColorPreset.SelectedValue = name; } catch { }
+            Config.Save();
         }
 
         // Saves a color preset
@@ -514,8 +757,16 @@ namespace OmenMon.AppGui {
 
             // Determine the clicked zone from co-ordinates
             // while also setting the dialog title in one go
-            this.ColorPicker.Title = Config.Locale.Get(Config.L_GUI_MAIN + "KbdColorPick" + Kbd.SetZone(e.X, e.Y).ToString());
-            
+            BiosData.KbdZone picked = Kbd.SetZone(e.X, e.Y);
+            this.ColorPicker.Title = Config.Locale.Get(Config.L_GUI_MAIN + "KbdColorPick" + picked.ToString());
+
+            // Reflect the clicked zone in the selector + sliders (guard the change echo)
+            try {
+                kbdRgbSyncing = true;
+                this.CmbKbdZone.SelectedIndex = ComboIndexForZone(picked);
+            } catch { } finally { kbdRgbSyncing = false; }
+            SyncKbdRgb();
+
             // Set the start color to the current color
             this.ColorPicker.Color = Color.FromArgb(Kbd.GetColor());
 
@@ -537,8 +788,9 @@ namespace OmenMon.AppGui {
             Context.FormMain.Kbd.SetColors(
                 Config.ColorPreset[(string) ((ComboBox) sender).SelectedValue]);
 
-            // Update the parameter textbox
+            // Update the parameter textbox and the R/G/B sliders / swatch
             this.TxtKbdColorVal.Text = Kbd.GetParam();
+            SyncKbdRgb();
 
         }
 
@@ -686,6 +938,12 @@ namespace OmenMon.AppGui {
             this.SysInfo = "";
             this.SysStatus = "";
 
+            // Reflect the current "start with Windows" task state
+            try { this.ChkAutoStart.Checked = Hw.TaskGet(Config.TaskId.Gui); } catch { }
+
+            // Reflect the active Windows power mode
+            SyncPwrMode();
+
             // Apply the update
             this.UpdateSysRtf();
 
@@ -710,8 +968,13 @@ namespace OmenMon.AppGui {
             string captionLocalized = Config.Locale.Get(captionLocaleId);
 
             // Locate the pertinent caption label
-            Label label = ((Label) this.GrpTmp.Controls.Find(
-                Gui.T_LBL + Gui.G_TMP + indexString + Gui.S_CAP, false)[0]);
+            // Rebuilt layout: the per-sensor grid is parked off-screen and its labels
+            // carry no Name, so this lookup finds nothing — nothing to set up per item.
+            Control[] found = this.GrpTmp.Controls.Find(
+                Gui.T_LBL + Gui.G_TMP + indexString + Gui.S_CAP, false);
+            if(found.Length == 0)
+                return;
+            Label label = (Label) found[0];
 
             // Also locate the value label
             Label labelValue =
@@ -742,11 +1005,12 @@ namespace OmenMon.AppGui {
         // Updates all of the form
         public void UpdateAll() {
 
-            // Refresh the snapshot synchronously so a freshly-shown (or just-changed) form
-            // renders live hardware values immediately rather than waiting for the next
-            // monitor pass. This is the one place the UI thread reads hardware on purpose
-            // (a user opened/changed the form) — never on the passive per-tick path.
-            Context.Monitor?.SampleNow();
+            // Only pay for a synchronous hardware read when there is nothing to render
+            // yet. The monitor thread republishes every UpdateMonitorInterval seconds,
+            // so an already-published snapshot is at most a few seconds old — not worth
+            // blocking the UI thread (and the window opening) on a BIOS + EC round-trip.
+            if(Context.Monitor != null && Context.Monitor.Current == null)
+                Context.Monitor.SampleNow();
 
             // Update form dimensions following a scaling change
             UpdateDpi(this.LastDpi);
@@ -766,6 +1030,22 @@ namespace OmenMon.AppGui {
             // Update the temperature group
             UpdateTmp();
 
+            // Feed the live graph
+            UpdateChart();
+
+        }
+
+        // Public entry for the tray timer tick (per Config.UpdateMonitorInterval)
+        public void UpdateChartTick() { UpdateChart(); }
+
+        // Pushes the latest snapshot into the top graph
+        private void UpdateChart() {
+            MonitorSnapshot s = Context.Monitor != null ? Context.Monitor.Current : null;
+            if(s == null || this.Chart == null)
+                return;
+            int cpuR = (s.FanSpeed != null && s.FanSpeed.Length > 0) ? s.FanSpeed[0] : 0;
+            int gpuR = (s.FanSpeed != null && s.FanSpeed.Length > 1) ? s.FanSpeed[1] : 0;
+            this.Chart.Push(s.CpuTemp, s.GpuTemp, cpuR, gpuR);
         }
 
         // Updates the form dimensions following a scaling change
@@ -847,6 +1127,13 @@ namespace OmenMon.AppGui {
             if(!this.BtnFanSet.Checked && !this.CmbFanProg.DroppedDown)
             try {
                 this.CmbFanProg.SelectedValue = s.ProgramName;
+
+                // Keep the inline curve in step with whatever profile is actually
+                // running — at startup the program name only becomes known once the
+                // first snapshot lands, after the constructor has already run.
+                if(!string.IsNullOrEmpty(s.ProgramName)
+                    && this.Curve != null && this.Curve.ProgramName != s.ProgramName)
+                    this.Curve.LoadProgram(s.ProgramName);
             } catch { }
 
 
@@ -946,6 +1233,76 @@ namespace OmenMon.AppGui {
 
             }
 
+            bool on = Kbd != null && Kbd.GetBacklight();
+            this.TrkKbdR.Enabled = this.TrkKbdG.Enabled = this.TrkKbdB.Enabled = on;
+            SyncKbdRgb();
+
+        }
+
+        // Last plausible temperature readings, used to bridge sensor dropouts
+        private int lastGoodCpuTemp, lastGoodGpuTemp;
+
+        // Reentrancy guard for the R/G/B sliders and the zone selector
+        private bool kbdRgbSyncing;
+
+        // CmbKbdZone item order <-> BiosData.KbdZone (enum: Right=0, Middle=1, Left=2, Wasd=3)
+        private static readonly BiosData.KbdZone[] KbdZoneByCombo = {
+            BiosData.KbdZone.Left, BiosData.KbdZone.Left, BiosData.KbdZone.Middle,
+            BiosData.KbdZone.Right, BiosData.KbdZone.Wasd
+        };
+        private static int ComboIndexForZone(BiosData.KbdZone z) {
+            switch(z) {
+                case BiosData.KbdZone.Left:   return 1;
+                case BiosData.KbdZone.Middle: return 2;
+                case BiosData.KbdZone.Right:  return 3;
+                case BiosData.KbdZone.Wasd:   return 4;
+                default: return 0;
+            }
+        }
+        private bool KbdUniform => this.CmbKbdZone.SelectedIndex <= 0;
+
+        // Zone selector changed -> point the sliders at that zone (or leave in "All" mode)
+        private void EventKbdZoneSelect(object sender, EventArgs e) {
+            if(Kbd == null)
+                return;
+            if(!KbdUniform)
+                Kbd.SetZone(KbdZoneByCombo[this.CmbKbdZone.SelectedIndex]);
+            SyncKbdRgb();
+        }
+
+        // R/G/B sliders -> whole keyboard (uniform) or the selected zone
+        private void EventKbdRgbScroll(object sender, EventArgs e) {
+            if(kbdRgbSyncing || Kbd == null || !Kbd.GetBacklight())
+                return;
+            Color c = Color.FromArgb(this.TrkKbdR.Value, this.TrkKbdG.Value, this.TrkKbdB.Value);
+            int zi = this.CmbKbdZone.SelectedIndex;
+            if(zi <= 0) {
+                Kbd.SetColors(c.ToArgb());                    // All zones (uniform)
+            } else {
+                Kbd.SetColor(KbdZoneByCombo[zi], c.ToArgb()); // target the picked zone directly
+            }
+            this.PnlKbdSwatch.BackColor = c;
+            this.TxtKbdColorVal.Text = Kbd.GetParam();
+            try { this.CmbKbdColorPreset.SelectedValue = Kbd.GetPreset(); } catch { }
+        }
+
+        // Push the current colour into the sliders + swatch without echoing events.
+        // In "All" mode the Right zone's colour represents the (uniform) keyboard.
+        private void SyncKbdRgb() {
+            if(Kbd == null)
+                return;
+            try {
+                kbdRgbSyncing = true;
+                int zi = this.CmbKbdZone.SelectedIndex;
+                Color c = Color.FromArgb(Kbd.GetColor(
+                    zi <= 0 ? BiosData.KbdZone.Right : KbdZoneByCombo[zi]));
+                this.TrkKbdR.Value = c.R;
+                this.TrkKbdG.Value = c.G;
+                this.TrkKbdB.Value = c.B;
+                this.PnlKbdSwatch.BackColor = c;
+            } catch { } finally {
+                kbdRgbSyncing = false;
+            }
         }
 
         // Keeps updating the color as it changes in the Color Picker dialog
@@ -953,6 +1310,7 @@ namespace OmenMon.AppGui {
             Kbd.SetColor(ColorTranslator.FromWin32(color).ToArgb());
             this.TxtKbdColorVal.Text = Kbd.GetParam();
             this.CmbKbdColorPreset.SelectedValue = Kbd.GetPreset();
+            SyncKbdRgb();
         }
 
         // Update the system information while preserving the status message.
@@ -963,32 +1321,43 @@ namespace OmenMon.AppGui {
             if(s == null)
                 return;
 
-            // Update the system info string
+            // Update the system info string.
+            // Same fields as before, but the groups are fenced off with a dim middle dot
+            // instead of a plain space. The content is intentionally terse; the separator
+            // is what lets the eye find where one fact ends and the next begins.
+            const string SEP = Conv.RTF_CF1 + " · ";
+
             this.SysInfo = ""
                 + Conv.RTF_CF6 + s.Manufacturer + " "
                 + Conv.RTF_CF5 + s.Product + " "
-                + Conv.RTF_CF1 + s.Version + " "
-                + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "Born") + " "
-                    + s.BornDate + " "
+                + Conv.RTF_CF1 + s.Version
+                + SEP
+                + Conv.RTF_CF1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "Born") + " "
+                    + Conv.RTF_CF5 + s.BornDate
                 + (s.CpuPl4 == 0 ? ""
-                    : Conv.RTF_CF1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "CpuPl4") + " "
+                    : SEP
+                    + Conv.RTF_CF1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "CpuPl4") + " "
                     + Conv.RTF_CF5 + s.CpuPl4.ToString()
-                    + Conv.RTF_CF1 + Config.Locale.Get(Config.L_UNIT + "Power") + " ")
+                    + Conv.RTF_CF1 + Config.Locale.Get(Config.L_UNIT + "Power"))
+                + SEP
                 + Conv.RTF_CF1 + (s.IsFullPower ?
                     Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "Adapter"
                         + Enum.GetName(typeof(BiosData.AdapterStatus), s.AdapterStatus))
                     : Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "AdapterBatteryPower"))
                     + Conv.RTF_LINE
                 + Conv.RTF_CF1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "Gpu") + " "
-                    + Conv.RTF_CF5 + Enum.GetName(typeof(BiosData.GpuMode), s.GpuMode) + " "
+                    + Conv.RTF_CF5 + Enum.GetName(typeof(BiosData.GpuMode), s.GpuMode)
+                + SEP
                 + Conv.RTF_CF1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuDState") + " "
-                    + Conv.RTF_CF5 + Enum.GetName(typeof(BiosData.GpuDState), s.GpuDState) + " "
+                    + Conv.RTF_CF5 + Enum.GetName(typeof(BiosData.GpuDState), s.GpuDState)
+                + SEP
                 + (s.GpuCustomTgp == BiosData.GpuCustomTgp.On ?
                     Conv.RTF_CF6 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuCustomTgp")
                     : Conv.RTF_CF1 + Conv.RTF_STRIKE1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuCustomTgp") + Conv.RTF_STRIKE0) + " "
                 + (s.GpuPpab == BiosData.GpuPpab.On ?
                     Conv.RTF_CF6 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuPpab")
-                    : Conv.RTF_CF1 + Conv.RTF_STRIKE1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuPpab") + Conv.RTF_STRIKE0) + " "
+                    : Conv.RTF_CF1 + Conv.RTF_STRIKE1 + Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS + "GpuPpab") + Conv.RTF_STRIKE0)
+                + SEP
                 + Conv.RTF_CF1 + Config.Locale.Get(
                     Config.L_GUI_MAIN + Gui.G_SYS + "Throttling"
                         + Enum.GetName(typeof(BiosData.Throttling), s.Throttling)) + Conv.RTF_LINE
@@ -1031,40 +1400,30 @@ namespace OmenMon.AppGui {
             if(s == null || s.TempValue == null)
                 return;
 
-            // Update the form data representation
-            for(int i = 0; i < Context.Op.Platform.Temperature.Length && i < s.TempValue.Length; i++)
-                UpdateTmpItem(i, s);
+            // Rebuilt layout: the two hero cells show named sensors chosen for this board;
+            // the per-sensor labels are parked off-screen but kept fed for completeness.
+            Label[] parked = {
+                LblTmp2Val, LblTmp3Val, LblTmp4Val, LblTmp5Val,
+                LblTmp6Val, LblTmp7Val, LblTmp8Val };
+            for(int i = 2; i < Context.Op.Platform.Temperature.Length && i < s.TempValue.Length && (i - 2) < parked.Length; i++)
+                parked[i - 2].Text = s.TempValue[i] > 0 ? s.TempValue[i].ToString() : "";
+
+            // CpuTemp/GpuTemp are already resolved in the monitor snapshot with the
+            // board-aware policy (max of EC CPUT and the WMI BIOS sensor, etc.).
+            // Bridge sensor dropouts (the GPU sensor intermittently answers 0) by
+            // holding the last plausible reading rather than showing a false 0.
+            int cpu = s.CpuTemp, gpu = s.GpuTemp;
+            if(cpu > 0 && cpu < 120) lastGoodCpuTemp = cpu; else cpu = lastGoodCpuTemp;
+            if(gpu > 0 && gpu < 120) lastGoodGpuTemp = gpu; else gpu = lastGoodGpuTemp;
+
+            string u = Config.TemperatureUseFahrenheit ? "°F" : "°C";
+            this.LblTmp0Val.Text = cpu > 0 ? FmtTemp(cpu) + " " + u : "—";
+            this.LblTmp1Val.Text = gpu > 0 ? FmtTemp(gpu) + " " + u : "—";
 
         }
 
-        // Updates an item within the temperature group
-        private void UpdateTmpItem(int index, MonitorSnapshot s) {
-
-            // Prepare the data
-            string prefix = Gui.T_LBL + Gui.G_TMP + index.ToString();
-            int value = s.TempValue[index];
-            PlatformData.ValueTrend valueTrend = s.TempTrend[index];
-
-            // Locate the pertinent labels
-            Label labelCaption = ((Label) this.GrpTmp.Controls.Find(prefix + Gui.S_CAP, false)[0]);
-            Label labelValue = ((Label) this.GrpTmp.Controls[this.GrpTmp.Controls.IndexOf(labelCaption) + 1]);
-
-            // Update the status
-            labelCaption.Enabled = value > 0;
-
-            // Convert to Fahrenheit if configured
-            int displayValue = Config.TemperatureUseFahrenheit && value > 0
-                ? (value * 9 / 5) + 32 : value;
-            string tempUnit = Config.TemperatureUseFahrenheit
-                ? "°F" : Config.Locale.Get(Config.L_UNIT + "Temperature" + Config.LS_CUSTOM_FONT);
-
-            // Update the value
-            labelValue.Text = value == 0 ? "" :
-                displayValue.ToString() + tempUnit
-                + (valueTrend == PlatformData.ValueTrend.Unchanged ?
-                    Conv.GetChar(Conv.SpecialChar.SpaceEn) : valueTrend == PlatformData.ValueTrend.Ascending ?
-                        Conv.GetChar(Conv.SpecialChar.SupPlus) : Conv.GetChar(Conv.SpecialChar.SupMinus));
-
+        private int FmtTemp(int c) {
+            return Config.TemperatureUseFahrenheit ? (c * 9 / 5) + 32 : c;
         }
 #endregion
  

@@ -103,12 +103,32 @@ namespace OmenMon.AppGui {
                 // background thread cannot land on the alternate program due to a
                 // transient AC-flicker (issue #70).
                 this.FullPower = this.Platform.System.IsFullPowerConfirmed();
+
+                // Restore the profile the user last applied; fall back to the
+                // configured default (Silent) on a first run or if it was deleted.
+                string saved = UserPrefs.Get(UserPrefs.KeyFanProfile, null);
+                if(string.IsNullOrEmpty(saved) || !Config.FanProgram.ContainsKey(saved))
+                    saved = null;
+
                 if(this.FullPower)
-                    this.Program.Run(Config.FanProgramDefault);
+                    this.Program.Run(saved ?? Config.FanProgramDefault);
                 else
-                    this.Program.Run(Config.FanProgramDefaultAlt, true);
+                    this.Program.Run(saved ?? Config.FanProgramDefaultAlt, true);
 
             }
+
+            // Restore the power preset the user last chose. Eco is only the default
+            // for a first run — someone installing a fan utility usually wants the
+            // quiet, cool combination — but an explicit choice always wins.
+            try {
+                PowerPresets.Def d = PowerPresets.Resolve(
+                    UserPrefs.Get(UserPrefs.KeyPowerPreset, PowerPresets.Eco),
+                    UserPrefs.GetInt(UserPrefs.KeyCustomWatts, 45));
+                External.PowrProf.PowerSetActiveOverlayScheme(d.Overlay);
+                BiosData.CpuPowerData cpu = new BiosData.CpuPowerData();
+                cpu.Limit1 = d.Pl1; cpu.Limit2 = d.Pl2; cpu.Limit4 = d.Pl4;
+                Hw.BiosExec(bios => bios.SetCpuPower(cpu), Hw.Bios);
+            } catch { }
 
             // Update the main form, if visible (effectively a no-op at startup — the form
             // is not created yet; the periodic snapshot render covers it otherwise)

@@ -2,6 +2,12 @@
  //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
      //  https://omenmon.github.io/
 // OmenMon-Reborn additions © 2026 seakyy
+//
+// Main window layout — rebuilt from scratch (v1.4.12-reborn): minimal dark,
+// generous spacing, four stacked sections. CPU/GPU fan rpm + temperature are the
+// hero readout at the top; horizontal fan sliders; keyboard section kept and
+// extended with R/G/B sliders + a live swatch. Control field names are unchanged
+// so the behaviour code (GuiFormMain.cs) needs no edits beyond the temp/RGB hooks.
 
 using System;
 using System.Drawing;
@@ -11,99 +17,115 @@ using OmenMon.Library;
 
 namespace OmenMon.AppGui {
 
-    // The main GUI form
     public partial class GuiFormMain : Form {
 
 #region Form Components
-        // Form components
-        private ButtonEx BtnFanSet;           // Button to apply fan settings
-        private Button BtnKbdColorPresetDel;  // Button to delete color preset
-        private Button BtnKbdColorPresetSet;  // Button to save color preset
-        private CheckBox ChkKbdBacklight;     // Checkbox to toggle backlight
-        private ComboBox CmbFanMode;          // Fan mode (built-in) list
-        private ComboBox CmbFanProg;          // Fan program (custom) list
-        private ComboBox CmbKbdColorPreset;   // Color preset list
-        private GroupBox GrpFan;              // Fan group box
-        private GroupBox GrpKbd;              // Keyboard group box
-        private GroupBox GrpSys;              // System group box
-        private GroupBox GrpTmp;              // Temperature group box
-        private Label LblFan0Cap;             // Fan #0 caption ("CPU")
-        private Label LblFan0Rte;             // Fan #0 rate [%]
-        private Label LblFan0Val;             // Fan #0 value [rpm]
-        private Label LblFan1Cap;             // Fan #1 caption ("GPU")
-        private Label LblFan1Rte;             // Fan #1 rate [%]
-        private Label LblFan1Val;             // Fan #1 value [rpm]
-        private Label LblFanCountdown;        // Custom settings fan countdown
-        private Label LblFanUnitRte;          // Fan rate unit ("%")
-        private Label LblFanUnitVal;          // Fan value unit ("rpm")
-        private Label LblTmp0Cap;             // Temperature sensor #0 caption
-        private Label LblTmp0Val;             // Temperature sensor #0 value [°C]
-        private Label LblTmp1Cap;             // Temperature sensor #1 caption
-        private Label LblTmp1Val;             // Temperature sensor #1 value [°C]
-        private Label LblTmp2Cap;             // Temperature sensor #2 caption
-        private Label LblTmp2Val;             // Temperature sensor #2 value [°C]
-        private Label LblTmp3Cap;             // Temperature sensor #3 caption
-        private Label LblTmp3Val;             // Temperature sensor #3 value [°C]
-        private Label LblTmp4Cap;             // Temperature sensor #4 caption
-        private Label LblTmp4Val;             // Temperature sensor #4 value [°C]
-        private Label LblTmp5Cap;             // Temperature sensor #5 caption
-        private Label LblTmp5Val;             // Temperature sensor #5 value [°C]
-        private Label LblTmp6Cap;             // Temperature sensor #6 caption
-        private Label LblTmp6Val;             // Temperature sensor #6 value [°C]
-        private Label LblTmp7Cap;             // Temperature sensor #7 caption
-        private Label LblTmp7Val;             // Temperature sensor #7 value [°C]
-        private Label LblTmp8Cap;             // Temperature sensor #8 caption
-        private Label LblTmp8Val;             // Temperature sensor #8 value [°C]
-        internal PictureBox PicKbd;           // Keyboard graphics for color preset demonstration
-        private ProgressBarEx BarFan0Rte;     // Fan #0 rate bar [%]
-        private ProgressBarEx BarFan1Rte;     // Fan #1 rate bar [%]
-        private RadioButton RdoFanAuto;       // Fan auto setting radio button
-        private RadioButton RdoFanConst;      // Fan constant setting radio button
-        private RadioButton RdoFanMax;        // Fan maximum setting radio button
-        private RadioButton RdoFanOff;        // Fan off setting radio button
-        private RadioButton RdoFanProg;       // Fan program setting radio button
-        private RichTextBox RtfSysInfo;       // System status information text
-        private TextBox TxtKbdColorVal;       // Keyboard color definition text input/output field
-        private ToolTip Tip;                  // Shows pop-up explanations when hovering over items
-        private TrackBar TrkFan0Lvl;        // Fan #0 level [krpm]
-        private TrackBar TrkFan1Lvl;        // Fan #1 level [krpm]
+        private ButtonEx BtnFanSet;
+        private Button BtnCurveEdit;          // saves the edited curve
+        private Button BtnProfAdd;            // new profile
+        private Button BtnProfDel;            // delete profile (not the 3 standard ones)
+        private Button BtnMenu;               // shows the tray menu (right-click no longer does)
+        private CheckBox ChkAutoStart;        // start OmenMon with Windows
+        private Button BtnKbdColorPresetDel;
+        private Button BtnKbdColorPresetRen;
+        private Button BtnKbdColorPresetSet;
+        private CheckBox ChkKbdBacklight;
+        private ComboBox CmbFanMode;
+        private ComboBox CmbFanProg;
+        private ComboBox CmbKbdColorPreset;
+        private ComboBox CmbKbdZone;          // which zone the R/G/B sliders drive (or All)
+        internal GuiChart Chart;              // live temp / rpm graph
+        internal GuiCurveEditor Curve;        // inline editable fan curve
+        // One power selector: each choice sets the Windows power mode AND the CPU limits.
+        private RadioButton RdoPwrEco, RdoPwrBal, RdoPwrPerf, RdoPwrCustom;
+        private NumericUpDown NumPwrWatt;     // custom sustained wattage
+        private Label LblPwrHint;
+        private GroupBox GrpChart;
+        private GroupBox GrpPwr;
+        private GroupBox GrpFan;
+        private GroupBox GrpKbd;
+        private GroupBox GrpSys;
+        private GroupBox GrpTmp;
+        private Label LblFan0Cap;
+        private Label LblFan0Rte;
+        private Label LblFan0Val;
+        private Label LblFan1Cap;
+        private Label LblFan1Rte;
+        private Label LblFan1Val;
+        private Label LblFanCountdown;
+        private Label LblFanUnitRte;
+        private Label LblFanUnitVal;
+        private Label LblHdrRpm;
+        private Label LblHdrTmp;
+        private Label LblKbdR, LblKbdG, LblKbdB;
+        private Label LblTmp0Cap, LblTmp0Val;
+        private Label LblTmp1Cap, LblTmp1Val;
+        private Label LblTmp2Cap, LblTmp2Val;
+        private Label LblTmp3Cap, LblTmp3Val;
+        private Label LblTmp4Cap, LblTmp4Val;
+        private Label LblTmp5Cap, LblTmp5Val;
+        private Label LblTmp6Cap, LblTmp6Val;
+        private Label LblTmp7Cap, LblTmp7Val;
+        private Label LblTmp8Cap, LblTmp8Val;
+        private Panel PnlTmpHidden;
+        private Panel PnlKbdSwatch;
+        internal PictureBox PicKbd;
+        private ProgressBarEx BarFan0Rte;
+        private ProgressBarEx BarFan1Rte;
+        private RadioButton RdoFanAuto;
+        private RadioButton RdoFanConst;
+        private RadioButton RdoFanMax;
+        private RadioButton RdoFanOff;
+        private RadioButton RdoFanProg;
+        private RichTextBox RtfSysInfo;
+        private TextBox TxtKbdColorVal;
+        private ToolTip Tip;
+        private TrackBar TrkFan0Lvl;
+        private TrackBar TrkFan1Lvl;
+        internal TrackBar TrkKbdR, TrkKbdG, TrkKbdB;
 #endregion
 
 #region Initialization
-        // Creates the components and applies their initial settings values
         private void Initialize() {
 
-            // Add a handler to run when the form is about to be closed
             this.FormClosing += Config.GuiCloseWindowExit ?
-                Context.Menu.EventActionExit : new FormClosingEventHandler(EventFormClosing); 
-
-            // Add a handler when the form visibility changes
+                Context.Menu.EventActionExit : new FormClosingEventHandler(EventFormClosing);
             this.VisibleChanged += EventFormVisibleChanged;
-
-            // Check for unknown hardware model on first show (runs once)
             this.Shown += EventFormShown;
-
-            // Add a handler to handle the help button being clicked
             this.HelpButtonClicked += EventActionHelp;
 
-            // Prepare the custom font object so that it can be referenced later
             this.FigureFont = new Font(
-                GdiFont.Get(0),
-                Config.GuiFigureFontSize,
-                FontStyle.Regular,
-                GraphicsUnit.Pixel);
+                GdiFont.Get(0), Config.GuiFigureFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
+            Font heroFont = new Font(GdiFont.Get(0), 33F, FontStyle.Regular, GraphicsUnit.Pixel);
+            Font capFont  = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
-#region Form Component Instantiation
-            // Instantiate form components
+#region Instantiation
             this.BarFan0Rte = new ProgressBarEx();
             this.BarFan1Rte = new ProgressBarEx();
             this.BtnFanSet = new ButtonEx();
+            this.BtnCurveEdit = new Button();
+            this.BtnProfAdd = new Button();
+            this.BtnProfDel = new Button();
+            this.BtnMenu = new Button();
             this.BtnKbdColorPresetDel = new Button();
+            this.BtnKbdColorPresetRen = new Button();
             this.BtnKbdColorPresetSet = new Button();
+            this.ChkAutoStart = new CheckBox();
             this.ChkKbdBacklight = new CheckBox();
             this.CmbFanMode = new ComboBox();
             this.CmbFanProg = new ComboBox();
             this.CmbKbdColorPreset = new ComboBox();
+            this.CmbKbdZone = new ComboBox();
+            this.Chart = new GuiChart();
+            this.Curve = new GuiCurveEditor();
+            this.RdoPwrEco = new RadioButton();
+            this.RdoPwrBal = new RadioButton();
+            this.RdoPwrPerf = new RadioButton();
+            this.RdoPwrCustom = new RadioButton();
+            this.NumPwrWatt = new NumericUpDown();
+            this.LblPwrHint = new Label();
+            this.GrpChart = new GroupBox();
+            this.GrpPwr = new GroupBox();
             this.GrpFan = new GroupBox();
             this.GrpKbd = new GroupBox();
             this.GrpSys = new GroupBox();
@@ -117,24 +139,20 @@ namespace OmenMon.AppGui {
             this.LblFanCountdown = new Label();
             this.LblFanUnitRte = new Label();
             this.LblFanUnitVal = new Label();
-            this.LblTmp0Cap = new Label();
-            this.LblTmp0Val = new Label();
-            this.LblTmp1Cap = new Label();
-            this.LblTmp1Val = new Label();
-            this.LblTmp2Cap = new Label();
-            this.LblTmp2Val = new Label();
-            this.LblTmp3Cap = new Label();
-            this.LblTmp3Val = new Label();
-            this.LblTmp4Cap = new Label();
-            this.LblTmp4Val = new Label();
-            this.LblTmp5Cap = new Label();
-            this.LblTmp5Val = new Label();
-            this.LblTmp6Cap = new Label();
-            this.LblTmp6Val = new Label();
-            this.LblTmp7Cap = new Label();
-            this.LblTmp7Val = new Label();
-            this.LblTmp8Cap = new Label();
-            this.LblTmp8Val = new Label();
+            this.LblHdrRpm = new Label();
+            this.LblHdrTmp = new Label();
+            this.LblKbdR = new Label(); this.LblKbdG = new Label(); this.LblKbdB = new Label();
+            this.LblTmp0Cap = new Label(); this.LblTmp0Val = new Label();
+            this.LblTmp1Cap = new Label(); this.LblTmp1Val = new Label();
+            this.LblTmp2Cap = new Label(); this.LblTmp2Val = new Label();
+            this.LblTmp3Cap = new Label(); this.LblTmp3Val = new Label();
+            this.LblTmp4Cap = new Label(); this.LblTmp4Val = new Label();
+            this.LblTmp5Cap = new Label(); this.LblTmp5Val = new Label();
+            this.LblTmp6Cap = new Label(); this.LblTmp6Val = new Label();
+            this.LblTmp7Cap = new Label(); this.LblTmp7Val = new Label();
+            this.LblTmp8Cap = new Label(); this.LblTmp8Val = new Label();
+            this.PnlTmpHidden = new Panel();
+            this.PnlKbdSwatch = new Panel();
             this.PicKbd = new PictureBox();
             this.RdoFanAuto = new RadioButton();
             this.RdoFanConst = new RadioButton();
@@ -145,633 +163,546 @@ namespace OmenMon.AppGui {
             this.Tip = new ToolTip(this.Components);
             this.TrkFan0Lvl = new TrackBar();
             this.TrkFan1Lvl = new TrackBar();
+            this.TrkKbdR = new TrackBar(); this.TrkKbdG = new TrackBar(); this.TrkKbdB = new TrackBar();
             this.TxtKbdColorVal = new TextBox();
 #endregion
 
-#region Suspend Layout
-            // Suspend the layout before applying the settings
+            this.GrpChart.SuspendLayout();
+            this.GrpPwr.SuspendLayout();
             this.GrpFan.SuspendLayout();
             this.GrpKbd.SuspendLayout();
             this.GrpSys.SuspendLayout();
             this.GrpTmp.SuspendLayout();
             this.SuspendLayout();
-
-            // Initialize the components that specifically require it
             ((System.ComponentModel.ISupportInitialize) this.PicKbd).BeginInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan0Lvl).BeginInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan1Lvl).BeginInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdR).BeginInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdG).BeginInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdB).BeginInit();
+
+            const int W = 560;                 // section content width
+            const int GX = 16;                 // form left margin
+            const int HDR = 30;                // gap from section top to first control
+            Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
+
+#region Section: Graph
+            this.Chart.Location = new Point(6, HDR - 8);
+            this.Chart.Size = new Size(W - 12, 196);
+            this.Chart.SampleSeconds = Math.Max(1, Config.UpdateMonitorInterval);
+            this.GrpChart.Controls.Add(this.Chart);
+            this.GrpChart.Size = new Size(W, HDR + 192);
+            this.GrpChart.TabStop = false;
+            this.GrpChart.Text = "History";
 #endregion
 
-#region Fan Group
-#region Fan Group - Monitor
-            // Fan #0 caption ("CPU")
-            this.LblFan0Cap.Location = new Point(6, 16);
-            this.LblFan0Cap.Name = Gui.T_LBL + Gui.G_FAN + "0" + Gui.S_CAP;
-            this.LblFan0Cap.Size = new Size(34, 14);
-            this.LblFan0Cap.TabIndex = 0;
-            this.LblFan0Cap.Text = Config.Locale.Get(Config.L_GUI_MAIN + "Fan0");
-            this.LblFan0Cap.TextAlign = ContentAlignment.TopCenter;
+#region Section: Sensors (hero readout)
+            this.LblHdrRpm.AutoSize = false;
+            this.LblHdrRpm.Font = capFont; this.LblHdrRpm.ForeColor = cCap;
+            this.LblHdrRpm.Location = new Point(96, HDR);
+            this.LblHdrRpm.Size = new Size(150, 16);
+            this.LblHdrRpm.TextAlign = ContentAlignment.MiddleRight;
+            this.LblHdrRpm.Text = "rpm";
 
-            // Fan #1 caption ("GPU")
-            this.LblFan1Cap.Location = new Point(247, 16);
-            this.LblFan1Cap.Name = Gui.T_LBL + Gui.G_FAN + "1" + Gui.S_CAP;
-            this.LblFan1Cap.Size = new Size(34, 14);
-            this.LblFan1Cap.TabIndex = 1;
-            this.LblFan1Cap.Text = Config.Locale.Get(Config.L_GUI_MAIN + "Fan1");
-            this.LblFan1Cap.TextAlign = ContentAlignment.TopCenter;
+            this.LblHdrTmp.AutoSize = false;
+            this.LblHdrTmp.Font = capFont; this.LblHdrTmp.ForeColor = cCap;
+            this.LblHdrTmp.Location = new Point(252, HDR);
+            this.LblHdrTmp.Size = new Size(W - 268, 16);
+            this.LblHdrTmp.TextAlign = ContentAlignment.MiddleRight;
+            this.LblHdrTmp.Text = "°C";
 
-            // Fan value unit ("rpm")
-            this.LblFanUnitVal.Font = this.FigureFont;
-            this.LblFanUnitVal.Location = new Point(121, 16);
-            this.LblFanUnitVal.Name = Gui.T_LBL + Gui.G_FAN + Gui.X_UNIT + Gui.S_VAL;
-            this.LblFanUnitVal.Size = new Size(44, 27);
-            this.LblFanUnitVal.TabIndex = 2;
-            this.LblFanUnitVal.Text = Config.Locale.Get(Config.L_UNIT + "RotationRate" + Config.LS_CUSTOM_FONT);
-            this.LblFanUnitVal.TextAlign = ContentAlignment.MiddleCenter;
+            int r0 = HDR + 22, r1 = r0 + 52;
+            this.LblFan0Cap.Font = capFont; this.LblFan0Cap.ForeColor = cCap;
+            this.LblFan0Cap.Location = new Point(18, r0 + 12);
+            this.LblFan0Cap.Size = new Size(60, 30);
+            this.LblFan0Cap.Text = "CPU";
 
-            // Fan #0 value [rpm]
-            this.LblFan0Val.Font = this.FigureFont;
-            this.LblFan0Val.Location = new Point(40, 16);
-            this.LblFan0Val.Name = Gui.T_LBL + Gui.G_FAN + "0" + Gui.S_VAL;
-            this.LblFan0Val.Size = new Size(87, 27);
-            this.LblFan0Val.TabIndex = 3;
-            this.LblFan0Val.TextAlign = ContentAlignment.MiddleCenter;
+            this.LblFan0Val.Font = heroFont; this.LblFan0Val.ForeColor = cVal;
+            this.LblFan0Val.Location = new Point(78, r0);
+            this.LblFan0Val.Size = new Size(168, 46);
+            this.LblFan0Val.TextAlign = ContentAlignment.MiddleRight;
 
-            // Fan #1 value [rpm]
-            this.LblFan1Val.Font = this.FigureFont;
-            this.LblFan1Val.Location = new Point(177, 16);
-            this.LblFan1Val.Name = Gui.T_LBL + Gui.G_FAN + "1" + Gui.S_CAP;
-            this.LblFan1Val.Size = new Size(66, 27);
-            this.LblFan1Val.TabIndex = 4;
-            this.LblFan1Val.TextAlign = ContentAlignment.MiddleCenter;
+            this.LblTmp0Val.Font = heroFont; this.LblTmp0Val.ForeColor = cVal;
+            this.LblTmp0Val.Location = new Point(252, r0);
+            this.LblTmp0Val.Size = new Size(W - 268, 46);
+            this.LblTmp0Val.TextAlign = ContentAlignment.MiddleRight;
 
-            // Fan rate numerical value unit ("%")
-            this.LblFanUnitRte.Font = this.FigureFont;
-            this.LblFanUnitRte.Location = new Point(121, 43);
-            this.LblFanUnitRte.Name = Gui.T_LBL + Gui.G_FAN + Gui.X_UNIT + Gui.S_RTE;
-            this.LblFanUnitRte.Size = new Size(44, 27);
-            this.LblFanUnitRte.TabIndex = 5;
-            this.LblFanUnitRte.Text = Config.Locale.Get(Config.L_UNIT + "Percent");
-            this.LblFanUnitRte.TextAlign = ContentAlignment.MiddleCenter;
+            this.LblFan1Cap.Font = capFont; this.LblFan1Cap.ForeColor = cCap;
+            this.LblFan1Cap.Location = new Point(18, r1 + 12);
+            this.LblFan1Cap.Size = new Size(60, 30);
+            this.LblFan1Cap.Text = "GPU";
 
-            // Fan #0 rate numerical value [%]
-            this.LblFan0Rte.Font = this.FigureFont;
-            this.LblFan0Rte.Location = new Point(40, 43);
-            this.LblFan0Rte.Name = Gui.T_LBL + Gui.G_FAN + "0" + Gui.S_RTE;
-            this.LblFan0Rte.Size = new Size(87, 27);
-            this.LblFan0Rte.TabIndex = 6;
-            this.LblFan0Rte.TextAlign = ContentAlignment.MiddleCenter;
+            this.LblFan1Val.Font = heroFont; this.LblFan1Val.ForeColor = cVal;
+            this.LblFan1Val.Location = new Point(78, r1);
+            this.LblFan1Val.Size = new Size(168, 46);
+            this.LblFan1Val.TextAlign = ContentAlignment.MiddleRight;
 
-            // Fan #0 rate bar [%]
-            this.BarFan0Rte.BackColor = Color.FromArgb(Config.GuiColorCoolLite);
-            this.BarFan0Rte.ForeColor = Color.FromArgb(Config.GuiColorWarmLite);
-            this.BarFan0Rte.LinearGradientMode = LinearGradientMode.ForwardDiagonal;
-            this.BarFan0Rte.Location = new Point(40, 75);
-            this.BarFan0Rte.Name = Gui.T_BAR + Gui.G_FAN + "0" + Gui.S_RTE;
-            this.BarFan0Rte.Size = new Size(202, 10);
-            this.BarFan0Rte.Style = ProgressBarStyle.Continuous;
-            this.BarFan0Rte.TabIndex = 7;
+            this.LblTmp1Val.Font = heroFont; this.LblTmp1Val.ForeColor = cVal;
+            this.LblTmp1Val.Location = new Point(252, r1);
+            this.LblTmp1Val.Size = new Size(W - 268, 46);
+            this.LblTmp1Val.TextAlign = ContentAlignment.MiddleRight;
 
-            // Fan #1 rate numerical value [%]
-            this.LblFan1Rte.Font = this.FigureFont;
-            this.LblFan1Rte.Location = new Point(177, 43);
-            this.LblFan1Rte.Name = Gui.T_LBL + Gui.G_FAN + "1" + Gui.S_RTE;
-            this.LblFan1Rte.Size = new Size(66, 27);
-            this.LblFan1Rte.TabIndex = 8;
-            this.LblFan1Rte.TextAlign = ContentAlignment.MiddleCenter;
+            this.PnlTmpHidden.Location = new Point(0, 0);
+            this.PnlTmpHidden.Size = new Size(1, 1);
+            this.PnlTmpHidden.Visible = false;
+            this.LblFanUnitVal.Visible = false; this.LblFanUnitRte.Visible = false;
+            foreach(Label l in new[] {
+                LblTmp0Cap, LblTmp1Cap, LblTmp2Cap, LblTmp2Val, LblTmp3Cap, LblTmp3Val,
+                LblTmp4Cap, LblTmp4Val, LblTmp5Cap, LblTmp5Val, LblTmp6Cap, LblTmp6Val,
+                LblTmp7Cap, LblTmp7Val, LblTmp8Cap, LblTmp8Val })
+                this.PnlTmpHidden.Controls.Add(l);
 
-            // Fan #1 rate bar [%]
-            this.BarFan1Rte.BackColor = Color.FromArgb(Config.GuiColorCoolDark);
-            this.BarFan1Rte.ForeColor = Color.FromArgb(Config.GuiColorWarmDark);
-            this.BarFan1Rte.LinearGradientMode = LinearGradientMode.ForwardDiagonal;
-            this.BarFan1Rte.Location = new Point(40, 90);
-            this.BarFan1Rte.Name = Gui.T_BAR + Gui.G_FAN + "1" + Gui.S_RTE;
-            this.BarFan1Rte.RightToLeft = RightToLeft.Yes;
-            this.BarFan1Rte.RightToLeftLayout = true;
-            this.BarFan1Rte.Size = new Size(202, 10);
-            this.BarFan1Rte.Style = ProgressBarStyle.Continuous;
-            this.BarFan1Rte.TabIndex = 9;
-
-            // Fan #0 level (user-controllable) [krpm]
-            this.TrkFan0Lvl.AutoSize = false;
-            this.TrkFan0Lvl.Cursor = Cursors.SizeNS;
-            this.TrkFan0Lvl.Location = new Point(6, 30);
-            this.TrkFan0Lvl.Maximum = Config.FanLevelMax;
-            this.TrkFan0Lvl.Minimum = Config.FanLevelMin;
-            this.TrkFan0Lvl.Name = Gui.T_TRK + Gui.G_FAN + "0" + Gui.S_LVL;
-            this.TrkFan0Lvl.Orientation = Orientation.Vertical;
-            this.TrkFan0Lvl.Size = new Size(34, 150);
-            this.TrkFan0Lvl.TabIndex = 10;
-            this.TrkFan0Lvl.TabStop = false;
-            this.TrkFan0Lvl.TickFrequency = 5;
-
-            // Fan #1 level (user-controllable) [krpm]
-            this.TrkFan1Lvl.AutoSize = false;
-            this.TrkFan1Lvl.Cursor = Cursors.SizeNS;
-            this.TrkFan1Lvl.Location = new Point(247, 30);
-            this.TrkFan1Lvl.Maximum = Config.FanLevelMax;
-            this.TrkFan1Lvl.Minimum = Config.FanLevelMin;
-            this.TrkFan1Lvl.Name = Gui.T_TRK + Gui.G_FAN + "0" + Gui.S_LVL;
-            this.TrkFan1Lvl.Orientation = Orientation.Vertical;
-            this.TrkFan1Lvl.Size = new Size(34, 150);
-            this.TrkFan1Lvl.TabIndex = 11;
-            this.TrkFan1Lvl.TabStop = false;
-            this.TrkFan1Lvl.TickFrequency = 5;
-            this.TrkFan1Lvl.TickStyle = TickStyle.TopLeft;
-
-            // Custom settings fan countdown
-            this.LblFanCountdown.Font = this.FigureFont;
-            this.LblFanCountdown.Location = new Point(177, 101);
-            this.LblFanCountdown.Name = Gui.T_LBL + Gui.G_FAN + "Countdown";
-            this.LblFanCountdown.Size = new Size(66, 27);
-            this.LblFanCountdown.TabIndex = 12;
-            this.LblFanCountdown.TextAlign = ContentAlignment.MiddleRight;
+            this.GrpTmp.Controls.Add(this.LblHdrRpm);
+            this.GrpTmp.Controls.Add(this.LblHdrTmp);
+            this.GrpTmp.Controls.Add(this.LblFan0Cap);
+            this.GrpTmp.Controls.Add(this.LblFan0Val);
+            this.GrpTmp.Controls.Add(this.LblTmp0Val);
+            this.GrpTmp.Controls.Add(this.LblFan1Cap);
+            this.GrpTmp.Controls.Add(this.LblFan1Val);
+            this.GrpTmp.Controls.Add(this.LblTmp1Val);
+            this.GrpTmp.Controls.Add(this.PnlTmpHidden);
+            this.GrpTmp.Size = new Size(W, r1 + 58);
+            this.GrpTmp.TabStop = false;
+            this.GrpTmp.Text = "Sensors";
 #endregion
-#region Fan Group - Control
-            // Fan program setting radio button
-            this.RdoFanProg.Location = new Point(38, 107);
-            this.RdoFanProg.Name = Gui.T_RDO + Gui.G_FAN + "Prog";
-            this.RdoFanProg.Size = new Size(55, 21);
-            this.RdoFanProg.TabIndex = 13;
-            this.RdoFanProg.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN + "Prog");
-            this.RdoFanProg.UseVisualStyleBackColor = true;
 
-            // Fan program (custom) list
-            this.CmbFanProg.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
-            this.CmbFanProg.FormattingEnabled = true;
-            this.CmbFanProg.ItemHeight = 13;
-            this.CmbFanProg.Location = new Point(95, 107);
-            this.CmbFanProg.Name = Gui.T_CMB + Gui.G_FAN + "Prog";
-            this.CmbFanProg.Size = new Size(88, 21);
-            this.CmbFanProg.TabIndex = 14;
+#region Section: Fan  (profiles only, with the curve edited inline)
+            int fa = HDR;
 
-            // Fan auto setting radio button
-            this.RdoFanAuto.Location = new Point(38, 130);
-            this.RdoFanAuto.Name = "RdoFanAuto";
-            this.RdoFanAuto.Size = new Size(55, 21);
-            this.RdoFanAuto.TabIndex = 15;
-            this.RdoFanAuto.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN + "Auto");
-            this.RdoFanAuto.UseVisualStyleBackColor = true;
+            MakeMini("Profile", new Point(16, fa + 3), capFont, this.GrpFan);
+            this.CmbFanProg.DropDownStyle = ComboBoxStyle.DropDownList;
+            this.CmbFanProg.Location = new Point(72, fa);
+            this.CmbFanProg.Size = new Size(164, 24);
 
-            // Fan mode (built-in) list
-            this.CmbFanMode.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbFanMode.FormattingEnabled = true;
-            this.CmbFanMode.ItemHeight = 13;
-            this.CmbFanMode.Location = new Point(95, 130);
-            this.CmbFanMode.Name = Gui.T_CMB + Gui.G_FAN + "Mode";
-            this.CmbFanMode.Size = new Size(148, 21);
-            this.CmbFanMode.TabIndex = 16;
+            Action<Button, string, int, int> mkFanBtn = (b, t, x, w2) => {
+                b.Text = t; b.Location = new Point(x, fa - 1); b.Size = new Size(w2, 26);
+                b.FlatStyle = FlatStyle.Flat; b.BackColor = GuiTheme.PanelHi;
+                b.ForeColor = GuiTheme.Text; b.FlatAppearance.BorderColor = GuiTheme.Border;
+            };
+            mkFanBtn(this.BtnProfAdd, "+", 242, 28);
+            mkFanBtn(this.BtnProfDel, "−", 272, 28);
+            mkFanBtn(this.BtnCurveEdit, "Save curve", 398, 96);
 
-            // Fan maximum setting radio button
-            this.RdoFanMax.Location = new Point(38, 153);
-            this.RdoFanMax.Name = Gui.T_RDO + Gui.G_FAN + "Max";
-            this.RdoFanMax.Size = new Size(55, 21);
-            this.RdoFanMax.TabIndex = 17;
-            this.RdoFanMax.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN + "Max");
-            this.RdoFanMax.UseVisualStyleBackColor = true;
-
-            // Fan constant setting radio button
-            this.RdoFanConst.Location = new Point(94, 153);
-            this.RdoFanConst.Name = Gui.T_RDO + Gui.G_FAN + "Const";
-            this.RdoFanConst.Size = new Size(70, 21);
-            this.RdoFanConst.TabIndex = 18;
-            this.RdoFanConst.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN + "Const");
-            this.RdoFanConst.TextAlign = ContentAlignment.MiddleCenter;
-            this.RdoFanConst.UseVisualStyleBackColor = true;
-
-            // Fan off setting radio button
-            this.RdoFanOff.Location = new Point(165, 153);
-            this.RdoFanOff.Name = Gui.T_RDO + Gui.G_FAN + "Off";
-            this.RdoFanOff.Size = new Size(50, 21);
-            this.RdoFanOff.TabIndex = 19;
-            this.RdoFanOff.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN + "Off");
-            this.RdoFanOff.TextAlign = ContentAlignment.MiddleCenter;
-            this.RdoFanOff.UseVisualStyleBackColor = true;
-
-            // Button to apply fan settings
-            this.BtnFanSet.HighlightColorDark = Color.FromArgb(Config.GuiColorWarmDark);
-            this.BtnFanSet.HighlightColorLight = Color.FromArgb(Config.GuiColorWarmLite);
-            this.BtnFanSet.HighlightGradientMode = LinearGradientMode.BackwardDiagonal;
+            this.BtnFanSet.HighlightColorDark = GuiTheme.Accent;
+            this.BtnFanSet.HighlightColorLight = GuiTheme.Accent;
+            this.BtnFanSet.HighlightWidth = 2;
             this.BtnFanSet.HighlightRadius = 2;
-            this.BtnFanSet.HighlightWidth = 5;
-            this.BtnFanSet.Location = new Point(218, 153);
-            this.BtnFanSet.Name = Gui.T_BTN + Gui.G_FAN + "Set";
-            this.BtnFanSet.Size = new Size(25, 21);
-            this.BtnFanSet.TabIndex = 20;
-            this.BtnFanSet.Text = Config.Locale.Get(Config.L_GUI + Gui.T_BTN + "Set");
-#endregion
+            this.BtnFanSet.ForeColor = GuiTheme.Text;
+            this.BtnFanSet.BackColor = GuiTheme.PanelHi;
+            this.BtnFanSet.Location = new Point(310, fa - 1);
+            this.BtnFanSet.Size = new Size(80, 26);
+            this.BtnFanSet.Text = "Apply";
 
-            // Fan group components
-            this.GrpFan.Controls.Add(this.BarFan0Rte);
-            this.GrpFan.Controls.Add(this.BarFan1Rte);
-            this.GrpFan.Controls.Add(this.BtnFanSet);
-            this.GrpFan.Controls.Add(this.CmbFanMode);
+            this.LblFanCountdown.Font = capFont; this.LblFanCountdown.ForeColor = cCap;
+            this.LblFanCountdown.Location = new Point(W - 58, fa + 3);
+            this.LblFanCountdown.Size = new Size(44, 20);
+            this.LblFanCountdown.TextAlign = ContentAlignment.MiddleRight;
+
+            // How the curve editor works — stated in the section, not hidden in a tooltip
+            Label curveHelp = new Label {
+                AutoSize = false, Font = capFont, ForeColor = GuiTheme.Muted,
+                Location = new Point(16, fa + 30), Size = new Size(W - 32, 18),
+                BackColor = Color.Transparent,
+                Text = "Left-click the graph to add a point · drag to move it · right-click a point to remove it"
+            };
+            this.GrpFan.Controls.Add(curveHelp);
+
+            // Inline curve editor, drawn like the history graph above
+            this.Curve.Location = new Point(6, fa + 50);
+            this.Curve.Size = new Size(W - 12, 198);
+
+            // Everything else the fan logic still reads is kept alive but off-screen:
+            // the five mode radios (Profile is forced on), the constant-speed sliders,
+            // the rate bars and the BIOS mode combo.
+            this.RdoFanProg.Checked = true;
+            this.CmbFanMode.DropDownStyle = ComboBoxStyle.DropDownList;
+            this.TrkFan0Lvl.Minimum = Config.FanLevelMin; this.TrkFan0Lvl.Maximum = Config.FanLevelMax;
+            this.TrkFan1Lvl.Minimum = Config.FanLevelMin; this.TrkFan1Lvl.Maximum = Config.FanLevelMax;
+
             this.GrpFan.Controls.Add(this.CmbFanProg);
-            this.GrpFan.Controls.Add(this.LblFan0Cap);
-            this.GrpFan.Controls.Add(this.LblFan0Rte);
-            this.GrpFan.Controls.Add(this.LblFan0Val);
-            this.GrpFan.Controls.Add(this.LblFan1Cap);
-            this.GrpFan.Controls.Add(this.LblFan1Rte);
-            this.GrpFan.Controls.Add(this.LblFan1Val);
+            this.GrpFan.Controls.Add(this.BtnProfAdd);
+            this.GrpFan.Controls.Add(this.BtnProfDel);
+            this.GrpFan.Controls.Add(this.BtnFanSet);
+            this.GrpFan.Controls.Add(this.BtnCurveEdit);
             this.GrpFan.Controls.Add(this.LblFanCountdown);
-            this.GrpFan.Controls.Add(this.LblFanUnitRte);
-            this.GrpFan.Controls.Add(this.LblFanUnitVal);
-            this.GrpFan.Controls.Add(this.RdoFanAuto);
-            this.GrpFan.Controls.Add(this.RdoFanConst);
-            this.GrpFan.Controls.Add(this.RdoFanMax);
-            this.GrpFan.Controls.Add(this.RdoFanOff);
-            this.GrpFan.Controls.Add(this.RdoFanProg);
-            this.GrpFan.Controls.Add(this.TrkFan0Lvl);
-            this.GrpFan.Controls.Add(this.TrkFan1Lvl);
-
-            // Fan group settings
-            this.GrpFan.Location = new Point(416, 68);
-            this.GrpFan.Name = Gui.T_GRP + Gui.G_FAN;
-            this.GrpFan.Size = new Size(287, 185);
-            this.GrpFan.TabIndex = 3;
+            this.GrpFan.Controls.Add(this.Curve);
+            this.GrpFan.Size = new Size(W, fa + 254);
             this.GrpFan.TabStop = false;
-            this.GrpFan.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_FAN).Replace("&", "&&");
+            this.GrpFan.Text = "Fan profile";
 #endregion
 
-#region Keyboard Group
-            // Checkbox to toggle backlight
+#region Section: Power
+            // One selector. Each choice sets the Windows power mode *and* the CPU
+            // wattage limits together — the user shouldn't have to know they are two
+            // different layers. Selected = solid accent fill, so it is unmistakable.
+            int pw = (W - 32 - 24) / 4;
+            Action<RadioButton, string, int> mkPwr = (rb, t, i) => {
+                rb.Text = t;
+                rb.Appearance = Appearance.Button;
+                rb.FlatStyle = FlatStyle.Flat;
+                rb.TextAlign = ContentAlignment.MiddleCenter;
+                rb.Location = new Point(16 + i * (pw + 8), HDR);
+                rb.Size = new Size(pw, 30);
+                rb.BackColor = GuiTheme.Panel;
+                rb.ForeColor = GuiTheme.Text;
+                rb.FlatAppearance.BorderColor = GuiTheme.Border;
+                rb.FlatAppearance.BorderSize = 1;
+                rb.FlatAppearance.CheckedBackColor = GuiTheme.Accent;
+                rb.FlatAppearance.MouseOverBackColor = GuiTheme.PanelHi;
+            };
+            mkPwr(this.RdoPwrEco,    "Eco",         0);
+            mkPwr(this.RdoPwrBal,    "Balanced",    1);
+            mkPwr(this.RdoPwrPerf,   "Performance", 2);
+            mkPwr(this.RdoPwrCustom, "Custom",      3);
+
+            // Custom takes ONE number — sustained watts. Boost, peak and the Windows
+            // power mode are derived from it so the three can never disagree.
+            // 25..54 W: the 7840HS cTDP window (45 W stock); the BIOS clamps above 54,
+            // and below ~25 the part throttles without getting meaningfully cooler.
+            MakeMini("Sustained", new Point(W - 176, HDR + 42), capFont, this.GrpPwr);
+            this.NumPwrWatt.Minimum = 25;
+            this.NumPwrWatt.Maximum = 54;
+            this.NumPwrWatt.Value = 45;
+            this.NumPwrWatt.Increment = 1;
+            this.NumPwrWatt.Location = new Point(W - 110, HDR + 40);
+            this.NumPwrWatt.Size = new Size(54, 24);
+            this.NumPwrWatt.TextAlign = HorizontalAlignment.Center;
+            this.NumPwrWatt.BorderStyle = BorderStyle.FixedSingle;
+            this.NumPwrWatt.BackColor = GuiTheme.Panel;
+            this.NumPwrWatt.ForeColor = GuiTheme.Text;
+            this.NumPwrWatt.Enabled = false;
+            MakeMini("W", new Point(W - 50, HDR + 42), capFont, this.GrpPwr);
+
+            // Live description of what the selected preset actually did
+            this.LblPwrHint.AutoSize = false;
+            this.LblPwrHint.Font = capFont;
+            this.LblPwrHint.ForeColor = GuiTheme.Muted;
+            this.LblPwrHint.Location = new Point(16, HDR + 36);
+            this.LblPwrHint.Size = new Size(W - 190, 34);
+            this.LblPwrHint.Text = "";
+
+            this.Tip.SetToolTip(this.RdoPwrEco,
+                "Windows power mode: Best efficiency.\nCPU: 30 W sustained, 45 W boost, 90 W peak.\nQuietest and coolest; longest battery life. Slower under sustained load.");
+            this.Tip.SetToolTip(this.RdoPwrBal,
+                "Windows power mode: Balanced.\nCPU: 45 W sustained, 65 W boost, 140 W peak.\nThe 7840HS stock 45 W TDP — the normal setting.");
+            this.Tip.SetToolTip(this.RdoPwrPerf,
+                "Windows power mode: Best performance.\nCPU: 54 W sustained, 80 W boost, 190 W peak.\nThe 54 W cTDP ceiling and your BIOS's full peak. Hotter and louder.");
+            this.Tip.SetToolTip(this.RdoPwrCustom,
+                "Set the sustained wattage yourself (25–54 W).\nBoost (~1.45x, max 80 W), peak (~3x, max 190 W) and the Windows\npower mode are derived from it, so they always stay consistent.");
+            this.Tip.SetToolTip(this.NumPwrWatt,
+                "Sustained CPU power. 45 W is the 7840HS stock TDP; 35–54 W is its cTDP window.");
+
+            this.GrpPwr.Controls.Add(this.RdoPwrEco);
+            this.GrpPwr.Controls.Add(this.RdoPwrBal);
+            this.GrpPwr.Controls.Add(this.RdoPwrPerf);
+            this.GrpPwr.Controls.Add(this.RdoPwrCustom);
+            this.GrpPwr.Controls.Add(this.NumPwrWatt);
+            this.GrpPwr.Controls.Add(this.LblPwrHint);
+            this.GrpPwr.Size = new Size(W, HDR + 76);
+            this.GrpPwr.TabStop = false;
+            this.GrpPwr.Text = "Power";
+#endregion
+
+#region Section: Keyboard
+            this.ChkKbdBacklight.Location = new Point(18, HDR + 2);
             this.ChkKbdBacklight.AutoCheck = false;
-            this.ChkKbdBacklight.Location = new Point(6, 17);
-            this.ChkKbdBacklight.Name = Gui.T_CHK + Gui.G_KBD + "Backlight";
-            this.ChkKbdBacklight.Size = new Size(17, 21);
-            this.ChkKbdBacklight.TabIndex = 0;
-            this.ChkKbdBacklight.UseVisualStyleBackColor = true;
+            this.ChkKbdBacklight.Size = new Size(90, 24);
+            this.ChkKbdBacklight.Text = "Backlight";
 
-            // Color preset list
-            this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbKbdColorPreset.FormattingEnabled = true;
-            this.CmbKbdColorPreset.ItemHeight = 13;
-            this.CmbKbdColorPreset.Location = new Point(26, 17);
-            this.CmbKbdColorPreset.Name = Gui.T_CMB + Gui.G_KBD + "ColorPreset";
-            this.CmbKbdColorPreset.Size = new Size(140, 21);
-            this.CmbKbdColorPreset.TabIndex = 1;
+            // Which zone the R/G/B sliders apply to (index 0 = All = uniform colour)
+            this.CmbKbdZone.DropDownStyle = ComboBoxStyle.DropDownList;
+            this.CmbKbdZone.Location = new Point(120, HDR);
+            this.CmbKbdZone.Size = new Size(W - 138, 26);
+            this.CmbKbdZone.Items.AddRange(new object[] {
+                "All zones (uniform)", "Left  (F1–F5)", "Middle  (F6–F12)", "Right  (nav / arrows)", "WASD" });
+            this.CmbKbdZone.SelectedIndex = 0;
+            this.CmbKbdZone.SelectedIndexChanged += EventKbdZoneSelect;
 
-            // Keyboard color definition text input/output field
-            this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
-            this.TxtKbdColorVal.Location = new Point(170, 18);
-            this.TxtKbdColorVal.MaxLength = 27;
-            this.TxtKbdColorVal.Name = Gui.T_TXT + Gui.G_KBD + "Color" + Gui.S_VAL;
-            this.TxtKbdColorVal.Size = new Size(175, 20);
-            this.TxtKbdColorVal.TabIndex = 2;
-            this.TxtKbdColorVal.TextAlign = HorizontalAlignment.Center;
-
-            // Button to delete the color preset
-            this.BtnKbdColorPresetDel.Location = new Point(348, 16);
-            this.BtnKbdColorPresetDel.Name = Gui.T_BTN + Gui.G_KBD + "ColorPresetDel";
-            this.BtnKbdColorPresetDel.Size = new Size(25, 21);
-            this.BtnKbdColorPresetDel.TabIndex = 3;
-            this.BtnKbdColorPresetDel.Text = Config.Locale.Get(Config.L_GUI + "BtnDel");
-            this.BtnKbdColorPresetDel.UseVisualStyleBackColor = true;
-
-            // Button to save the current colors as a preset
-            this.BtnKbdColorPresetSet.Location = new Point(375, 16);
-            this.BtnKbdColorPresetSet.Name = Gui.T_BTN + Gui.G_KBD + "ColorPresetSet";
-            this.BtnKbdColorPresetSet.Size = new Size(25, 21);
-            this.BtnKbdColorPresetSet.TabIndex = 4;
-            this.BtnKbdColorPresetSet.Text = Config.Locale.Get(Config.L_GUI + "BtnSet");
-            this.BtnKbdColorPresetSet.UseVisualStyleBackColor = true;
-
-            // Keyboard graphics line art for color preset demo
-            this.PicKbd.Location = new Point(6, 43);
-            this.PicKbd.Name = Gui.T_PIC + Gui.G_KBD;
-            this.PicKbd.Size = new Size(393, 130);
+            this.PicKbd.Location = new Point(40, HDR + 32);
+            this.PicKbd.Size = new Size(W - 80, 92);
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
-            this.PicKbd.TabIndex = 5;
             this.PicKbd.TabStop = false;
 
-            // Keyboard group controls
-            this.GrpKbd.Controls.Add(this.BtnKbdColorPresetDel);
-            this.GrpKbd.Controls.Add(this.BtnKbdColorPresetSet);
-            this.GrpKbd.Controls.Add(this.ChkKbdBacklight);
-            this.GrpKbd.Controls.Add(this.CmbKbdColorPreset);
-            this.GrpKbd.Controls.Add(this.PicKbd);
-            this.GrpKbd.Controls.Add(this.TxtKbdColorVal);
+            int ry = HDR + 140;
+            this.LblKbdR.Text = "R"; this.LblKbdR.Font = capFont; this.LblKbdR.ForeColor = cCap;
+            this.LblKbdR.Location = new Point(18, ry + 4); this.LblKbdR.Size = new Size(16, 20);
+            this.LblKbdG.Text = "G"; this.LblKbdG.Font = capFont; this.LblKbdG.ForeColor = cCap;
+            this.LblKbdG.Location = new Point(138, ry + 4); this.LblKbdG.Size = new Size(16, 20);
+            this.LblKbdB.Text = "B"; this.LblKbdB.Font = capFont; this.LblKbdB.ForeColor = cCap;
+            this.LblKbdB.Location = new Point(258, ry + 4); this.LblKbdB.Size = new Size(16, 20);
 
-            // Keyboard group settings
-            this.GrpKbd.Location = new Point(6, 68);
-            this.GrpKbd.Name = Gui.T_GRP + Gui.G_KBD;
-            this.GrpKbd.Size = new Size(405, 185);
-            this.GrpKbd.TabIndex = 2;
+            SetupRgbSlider(this.TrkKbdR, new Point(36, ry));
+            SetupRgbSlider(this.TrkKbdG, new Point(156, ry));
+            SetupRgbSlider(this.TrkKbdB, new Point(276, ry));
+
+            this.PnlKbdSwatch.Location = new Point(W - 30, ry + 3);
+            this.PnlKbdSwatch.Size = new Size(24, 24);
+            this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
+
+            int py = ry + 44;
+            this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
+            this.CmbKbdColorPreset.Location = new Point(18, py);
+            this.CmbKbdColorPreset.Size = new Size(132, 26);
+
+            this.BtnKbdColorPresetSet.Location = new Point(156, py - 1);
+            this.BtnKbdColorPresetSet.Size = new Size(56, 27);
+            this.BtnKbdColorPresetSet.Text = "Save…";
+
+            this.BtnKbdColorPresetRen.Location = new Point(216, py - 1);
+            this.BtnKbdColorPresetRen.Size = new Size(60, 27);
+            this.BtnKbdColorPresetRen.Text = "Rename";
+
+            this.BtnKbdColorPresetDel.Location = new Point(280, py - 1);
+            this.BtnKbdColorPresetDel.Size = new Size(56, 27);
+            this.BtnKbdColorPresetDel.Text = "Delete";
+
+            // Hex value on its own line under the preset row
+            this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
+            this.TxtKbdColorVal.Location = new Point(18, py + 32);
+            this.TxtKbdColorVal.MaxLength = 27;
+            this.TxtKbdColorVal.Size = new Size(W - 36, 24);
+            this.TxtKbdColorVal.TextAlign = HorizontalAlignment.Center;
+
+            this.GrpKbd.Controls.Add(this.ChkKbdBacklight);
+            this.GrpKbd.Controls.Add(this.CmbKbdZone);
+            this.GrpKbd.Controls.Add(this.PicKbd);
+            this.GrpKbd.Controls.Add(this.LblKbdR);
+            this.GrpKbd.Controls.Add(this.LblKbdG);
+            this.GrpKbd.Controls.Add(this.LblKbdB);
+            this.GrpKbd.Controls.Add(this.TrkKbdR);
+            this.GrpKbd.Controls.Add(this.TrkKbdG);
+            this.GrpKbd.Controls.Add(this.TrkKbdB);
+            this.GrpKbd.Controls.Add(this.PnlKbdSwatch);
+            this.GrpKbd.Controls.Add(this.CmbKbdColorPreset);
+            this.GrpKbd.Controls.Add(this.BtnKbdColorPresetSet);
+            this.GrpKbd.Controls.Add(this.BtnKbdColorPresetRen);
+            this.GrpKbd.Controls.Add(this.BtnKbdColorPresetDel);
+            this.GrpKbd.Controls.Add(this.TxtKbdColorVal);
+            this.GrpKbd.Size = new Size(W, py + 66);
             this.GrpKbd.TabStop = false;
-            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&", "&&");
+            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&&", " ").Replace("&", "");
 #endregion
 
-#region System Status Group
-            // System status information text
-            this.RtfSysInfo.BackColor = SystemColors.Control;
+#region Section: System
+            this.ChkAutoStart.AutoCheck = false;
+            this.ChkAutoStart.Location = new Point(14, HDR);
+            this.ChkAutoStart.Size = new Size(220, 22);
+            this.ChkAutoStart.Text = "Start with Windows";
+
+            // The tray menu is gone from the UI — Exit is the one thing it was still
+            // needed for, so it gets a real button. (Middle-clicking the tray icon
+            // still reveals the old menu for the few legacy toggles not in the window.)
+            this.BtnMenu.Text = "Exit";
+            this.BtnMenu.FlatStyle = FlatStyle.Flat;
+            this.BtnMenu.BackColor = GuiTheme.PanelHi;
+            this.BtnMenu.ForeColor = GuiTheme.Text;
+            this.BtnMenu.FlatAppearance.BorderColor = GuiTheme.Border;
+            this.BtnMenu.Location = new Point(W - 104, HDR - 3);
+            this.BtnMenu.Size = new Size(90, 27);
+            this.BtnMenu.Click += (s, e) => Application.Exit();
+
             this.RtfSysInfo.BorderStyle = BorderStyle.None;
-            this.RtfSysInfo.Cursor = Cursors.Arrow;
+            this.RtfSysInfo.Cursor = Cursors.IBeam;
             this.RtfSysInfo.DetectUrls = false;
-            this.RtfSysInfo.Enabled = false;
-            this.RtfSysInfo.Location = new Point(6, 16);
-            this.RtfSysInfo.Name = Gui.T_RTF + Gui.G_SYS + "Info";
+
+            // Left enabled, unlike before: a disabled RichTextBox greys its whole content,
+            // which on the dark ground was most of why this strip was unreadable. ReadOnly
+            // plus TabStop=false keeps it inert, and being enabled also means the line can
+            // be selected and copied — useful, since this is the block worth quoting in a
+            // bug report.
+            this.RtfSysInfo.Enabled = true;
             this.RtfSysInfo.ReadOnly = true;
+            this.RtfSysInfo.BackColor = GuiTheme.Bg;
+            this.RtfSysInfo.ForeColor = GuiTheme.Text;
+
+            this.RtfSysInfo.Location = new Point(14, HDR + 26);
             this.RtfSysInfo.ScrollBars = RichTextBoxScrollBars.None;
             this.RtfSysInfo.ShortcutsEnabled = false;
-            this.RtfSysInfo.Size = new Size(277, 43);
-            this.RtfSysInfo.TabIndex = 0;
+            this.RtfSysInfo.Size = new Size(W - 28, 46);
             this.RtfSysInfo.TabStop = false;
             this.RtfSysInfo.WordWrap = false;
 
-            // Override default font selection if set
-            if(Config.GuiSysInfoFontSize > 0)
-                this.RtfSysInfo.Font = new Font(
-                    Gui.DIALOG_FONT, Config.GuiSysInfoFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
-
-            // System status group components
+            // Monospace. The content is deliberately terse — board IDs, wattages, D-states,
+            // enum names — and in a proportional face those run together into one grey
+            // ribbon. A fixed pitch gives the values a column to sit in and makes the
+            // three lines scannable without changing a word of what they say.
+            try {
+                this.RtfSysInfo.Font = new Font("Consolas", 8.25F, FontStyle.Regular, GraphicsUnit.Point);
+            } catch {
+                if(Config.GuiSysInfoFontSize > 0)
+                    this.RtfSysInfo.Font = new Font(
+                        Gui.DIALOG_FONT, Config.GuiSysInfoFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
+            }
+            this.GrpSys.Controls.Add(this.ChkAutoStart);
+            this.GrpSys.Controls.Add(this.BtnMenu);
             this.GrpSys.Controls.Add(this.RtfSysInfo);
-
-            // System status group settings
-            this.GrpSys.Location = new Point(6, 3);
-            this.GrpSys.Name = Gui.T_GRP + Gui.G_SYS;
-            this.GrpSys.Size = new Size(287, 65);
-            this.GrpSys.TabIndex = 0;
+            this.GrpSys.Size = new Size(W, HDR + 76);
             this.GrpSys.TabStop = false;
-            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&", "&&");
+            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&&", " ").Replace("&", "");
 #endregion
 
-#region Temperature Group
-            // Temperature sensor #0 caption
-            this.LblTmp0Cap.Location = new Point(6, 16);
-            this.LblTmp0Cap.Name = Gui.T_LBL + Gui.G_TMP + "0" + Gui.S_CAP;
-            this.LblTmp0Cap.Size = new Size(44, 14);
-            this.LblTmp0Cap.TabIndex = 0;
-            this.LblTmp0Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #0 value [°C]
-            this.LblTmp0Val.Font = this.FigureFont;
-            this.LblTmp0Val.Location = new Point(6, 30);
-            this.LblTmp0Val.Name = Gui.T_LBL + Gui.G_TMP + "0" + Gui.S_VAL;
-            this.LblTmp0Val.Size = new Size(44, 27);
-            this.LblTmp0Val.TabIndex = 1;
-            this.LblTmp0Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #1 caption
-            this.LblTmp1Cap.Location = new Point(50, 16);
-            this.LblTmp1Cap.Name = Gui.T_LBL + Gui.G_TMP + "1" + Gui.S_CAP;
-            this.LblTmp1Cap.Size = new Size(44, 14);
-            this.LblTmp1Cap.TabIndex = 2;
-            this.LblTmp1Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #1 value [°C]
-            this.LblTmp1Val.Font = this.FigureFont;
-            this.LblTmp1Val.Location = new Point(50, 30);
-            this.LblTmp1Val.Name = Gui.T_LBL + Gui.G_TMP + "1" + Gui.S_VAL;
-            this.LblTmp1Val.Size = new Size(44, 27);
-            this.LblTmp1Val.TabIndex = 3;
-            this.LblTmp1Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #2 caption
-            this.LblTmp2Cap.Location = new Point(94, 16);
-            this.LblTmp2Cap.Name = Gui.T_LBL + Gui.G_TMP + "2" + Gui.S_CAP;
-            this.LblTmp2Cap.Size = new Size(44, 14);
-            this.LblTmp2Cap.TabIndex = 4;
-            this.LblTmp2Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #2 value [°C]
-            this.LblTmp2Val.Font = this.FigureFont;
-            this.LblTmp2Val.Location = new Point(94, 30);
-            this.LblTmp2Val.Name = Gui.T_LBL + Gui.G_TMP + "2" + Gui.S_VAL;
-            this.LblTmp2Val.Size = new Size(44, 27);
-            this.LblTmp2Val.TabIndex = 5;
-            this.LblTmp2Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #3 caption
-            this.LblTmp3Cap.Location = new Point(138, 16);
-            this.LblTmp3Cap.Name = Gui.T_LBL + Gui.G_TMP + "3" + Gui.S_CAP;
-            this.LblTmp3Cap.Size = new Size(44, 14);
-            this.LblTmp3Cap.TabIndex = 6;
-            this.LblTmp3Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #3 value [°C]
-            this.LblTmp3Val.Font = this.FigureFont;
-            this.LblTmp3Val.Location = new Point(138, 30);
-            this.LblTmp3Val.Name = Gui.T_LBL + Gui.G_TMP + "3" + Gui.S_VAL;
-            this.LblTmp3Val.Size = new Size(44, 27);
-            this.LblTmp3Val.TabIndex = 7;
-            this.LblTmp3Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #4 caption
-            this.LblTmp4Cap.Location = new Point(182, 16);
-            this.LblTmp4Cap.Name = Gui.T_LBL + Gui.G_TMP + "4" + Gui.S_CAP;
-            this.LblTmp4Cap.Size = new Size(44, 14);
-            this.LblTmp4Cap.TabIndex = 8;
-            this.LblTmp4Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #4 value [°C]
-            this.LblTmp4Val.Font = this.FigureFont;
-            this.LblTmp4Val.Location = new Point(182, 30);
-            this.LblTmp4Val.Name = Gui.T_LBL + Gui.G_TMP + "4" + Gui.S_VAL;
-            this.LblTmp4Val.Size = new Size(44, 27);
-            this.LblTmp4Val.TabIndex = 9;
-            this.LblTmp4Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #5 caption
-            this.LblTmp5Cap.Location = new Point(226, 16);
-            this.LblTmp5Cap.Name = Gui.T_LBL + Gui.G_TMP + "5" + Gui.S_CAP;
-            this.LblTmp5Cap.Size = new Size(44, 14);
-            this.LblTmp5Cap.TabIndex = 10;
-            this.LblTmp5Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #5 value [°C]
-            this.LblTmp5Val.Font = this.FigureFont;
-            this.LblTmp5Val.Location = new Point(226, 30);
-            this.LblTmp5Val.Name = Gui.T_LBL + Gui.G_TMP + "5" + Gui.S_VAL;
-            this.LblTmp5Val.Size = new Size(44, 27);
-            this.LblTmp5Val.TabIndex = 11;
-            this.LblTmp5Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #6 caption
-            this.LblTmp6Cap.Location = new Point(270, 16);
-            this.LblTmp6Cap.Name = Gui.T_LBL + Gui.G_TMP + "6" + Gui.S_CAP;
-            this.LblTmp6Cap.Size = new Size(44, 14);
-            this.LblTmp6Cap.TabIndex = 12;
-            this.LblTmp6Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #6 value [°C]
-            this.LblTmp6Val.Font = this.FigureFont;
-            this.LblTmp6Val.Location = new Point(270, 30);
-            this.LblTmp6Val.Name = Gui.T_LBL + Gui.G_TMP + "6" + Gui.S_VAL;
-            this.LblTmp6Val.Size = new Size(44, 27);
-            this.LblTmp6Val.TabIndex = 13;
-            this.LblTmp6Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #7 caption
-            this.LblTmp7Cap.Location = new Point(314, 16);
-            this.LblTmp7Cap.Name = Gui.T_LBL + Gui.G_TMP + "7" + Gui.S_CAP;
-            this.LblTmp7Cap.Size = new Size(44, 14);
-            this.LblTmp7Cap.TabIndex = 14;
-            this.LblTmp7Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #7 value [°C]
-            this.LblTmp7Val.Font = this.FigureFont;
-            this.LblTmp7Val.Location = new Point(314, 30);
-            this.LblTmp7Val.Name = Gui.T_LBL + Gui.G_TMP + "7" + Gui.S_VAL;
-            this.LblTmp7Val.Size = new Size(44, 27);
-            this.LblTmp7Val.TabIndex = 15;
-            this.LblTmp7Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature sensor #8 caption
-            this.LblTmp8Cap.Location = new Point(358, 16);
-            this.LblTmp8Cap.Name = Gui.T_LBL + Gui.G_TMP + "8" + Gui.S_CAP;
-            this.LblTmp8Cap.Size = new Size(44, 14);
-            this.LblTmp8Cap.TabIndex = 16;
-            this.LblTmp8Cap.TextAlign = ContentAlignment.TopCenter;
-
-            // Temperature sensor #8 value [°C]
-            this.LblTmp8Val.Font = this.FigureFont;
-            this.LblTmp8Val.Location = new Point(358, 30);
-            this.LblTmp8Val.Name = Gui.T_LBL + Gui.G_TMP + "8" + Gui.S_VAL;
-            this.LblTmp8Val.Size = new Size(44, 27);
-            this.LblTmp8Val.TabIndex = 17;
-            this.LblTmp8Val.TextAlign = ContentAlignment.MiddleCenter;
-
-            // Temperature group components
-            this.GrpTmp.Controls.Add(this.LblTmp0Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp0Val);
-            this.GrpTmp.Controls.Add(this.LblTmp1Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp1Val);
-            this.GrpTmp.Controls.Add(this.LblTmp2Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp2Val);
-            this.GrpTmp.Controls.Add(this.LblTmp3Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp3Val);
-            this.GrpTmp.Controls.Add(this.LblTmp4Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp4Val);
-            this.GrpTmp.Controls.Add(this.LblTmp5Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp5Val);
-            this.GrpTmp.Controls.Add(this.LblTmp6Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp6Val);
-            this.GrpTmp.Controls.Add(this.LblTmp7Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp7Val);
-            this.GrpTmp.Controls.Add(this.LblTmp8Cap);
-            this.GrpTmp.Controls.Add(this.LblTmp8Val);
-
-            // Temperature group settings
-            this.GrpTmp.Location = new Point(298, 3);
-            this.GrpTmp.Name = Gui.T_GRP + Gui.G_TMP;
-            this.GrpTmp.Size = new Size(405, 65);
-            this.GrpTmp.TabIndex = 1;
-            this.GrpTmp.TabStop = false;
-            this.GrpTmp.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_TMP).Replace("&", "&&");
-#endregion
+            // Stack the sections with a consistent gap
+            const int GAP = 12;
+            this.GrpChart.Location = new Point(GX, GAP);
+            this.GrpTmp.Location = new Point(GX, this.GrpChart.Bottom + GAP);
+            this.GrpFan.Location = new Point(GX, this.GrpTmp.Bottom + GAP);
+            this.GrpPwr.Location = new Point(GX, this.GrpFan.Bottom + GAP);
+            this.GrpKbd.Location = new Point(GX, this.GrpPwr.Bottom + GAP);
+            this.GrpSys.Location = new Point(GX, this.GrpKbd.Bottom + GAP);
 
 #region Main Form
-            // Main form components
-            this.Controls.Add(this.GrpSys);
-            this.Controls.Add(this.GrpKbd);
-            this.Controls.Add(this.GrpFan);
+            this.Controls.Add(this.GrpChart);
             this.Controls.Add(this.GrpTmp);
+            this.Controls.Add(this.GrpFan);
+            this.Controls.Add(this.GrpPwr);
+            this.Controls.Add(this.GrpKbd);
+            this.Controls.Add(this.GrpSys);
 
-            // Main form settings
-            this.AutoScaleDimensions = new SizeF(6F, 13F);
-            this.AutoScaleMode = AutoScaleMode.Font;
-            this.AutoSize = true;
-            this.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            try { this.Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point); } catch { }
+            this.AutoScaleMode = AutoScaleMode.None;
+            this.AutoSize = false;
+            this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GAP);
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.HelpButton = true;
             this.Icon = OmenMon.Resources.Icon;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
             this.Name = Gui.T_FRM + "Main";
-            this.Size = new Size(725, 300);
             this.SizeGripStyle = SizeGripStyle.Hide;
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.Text = Config.Locale.Get(Config.L_GUI_MAIN + "Title");
+            // Title: "OmenMon Reborn 8BCA". Config.DisplayName is the single source for
+            // the user-facing name - the About box and the error report use the same one,
+            // so they cannot drift apart.
+            this.Text = Config.DisplayName;
 #endregion
 
 #region Tool Tips
-            // Common settings
-            this.Tip.InitialDelay = 0;
-            this.Tip.ReshowDelay = 0;
-            this.Tip.AutoPopDelay = 5000;
+            this.Tip.InitialDelay = 250;
+            this.Tip.ReshowDelay = 120;
+            this.Tip.AutoPopDelay = 12000;
 
-            // Fan control
-            this.Tip.SetToolTip(this.RdoFanProg, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Prog"));
-            this.Tip.SetToolTip(this.CmbFanProg, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Prog" + Gui.T_CMB));
-            this.Tip.SetToolTip(this.RdoFanAuto, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Auto"));
-            this.Tip.SetToolTip(this.CmbFanMode, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Mode"));
-            this.Tip.SetToolTip(this.RdoFanConst, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Const"));
-            this.Tip.SetToolTip(this.RdoFanMax, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Max"));
-            this.Tip.SetToolTip(this.RdoFanOff, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Off"));
-            this.Tip.SetToolTip(this.BtnFanSet, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Set"));
+            this.Tip.SetToolTip(this.LblFan0Val, "Live CPU fan speed (rpm).");
+            this.Tip.SetToolTip(this.LblFan1Val, "Live GPU fan speed (rpm). 0 = the GPU fan has parked (idle).");
+            this.Tip.SetToolTip(this.LblTmp0Val, "CPU temperature.");
+            this.Tip.SetToolTip(this.LblTmp1Val, "GPU temperature.");
 
-            // Fan monitor
-            this.Tip.SetToolTip(this.LblFan0Cap, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "0" + Gui.S_CAP));
-            this.Tip.SetToolTip(this.LblFan1Cap, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "1" + Gui.S_CAP));
-            this.Tip.SetToolTip(this.LblFanUnitVal, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + Gui.X_UNIT + Gui.S_VAL));
-            this.Tip.SetToolTip(this.LblFan0Val, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "0" + Gui.S_VAL));
-            this.Tip.SetToolTip(this.LblFan1Val, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "1" + Gui.S_VAL));
-            this.Tip.SetToolTip(this.LblFanUnitRte, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + Gui.X_UNIT + Gui.S_RTE));
-            this.Tip.SetToolTip(this.LblFan0Rte, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "0" + Gui.S_RTE));
-            this.Tip.SetToolTip(this.BarFan0Rte, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "0" + Gui.S_RTE + Gui.T_BAR));
-            this.Tip.SetToolTip(this.LblFan1Rte, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "1" + Gui.S_RTE));
-            this.Tip.SetToolTip(this.BarFan1Rte, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "1" + Gui.S_RTE + Gui.T_BAR));
-            this.Tip.SetToolTip(this.TrkFan0Lvl, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "0" + Gui.S_LVL));
-            this.Tip.SetToolTip(this.TrkFan1Lvl, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "1" + Gui.S_LVL));
-            this.Tip.SetToolTip(this.LblFanCountdown, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_FAN + "Countdown"));
+            this.Tip.SetToolTip(this.RdoFanAuto, "Hand fan control back to the BIOS. Fans follow the firmware curve for the selected mode.");
+            this.Tip.SetToolTip(this.RdoFanMax, "Force both fans to maximum speed. Loud — use briefly.");
+            this.Tip.SetToolTip(this.RdoFanOff, "Stop both fans. Only when cool and idle — they resume automatically on heat.");
+            this.Tip.SetToolTip(this.RdoFanConst, "Hold the fans at the speeds set by the two sliders below.");
+            this.Tip.SetToolTip(this.RdoFanProg, "Run a temperature→speed curve from OmenMon.xml (chosen at right).");
+            this.Tip.SetToolTip(this.CmbFanProg, "Fan-curve program to run when 'Program' is selected.");
+            this.Tip.SetToolTip(this.CmbFanMode, "Firmware performance profile (Default / Performance / Cool). Applied on Set.");
+            this.Tip.SetToolTip(this.TrkFan0Lvl, "CPU fan target. ~20 = quiet, 55 ≈ maximum. Needs 'Custom' + Set.");
+            this.Tip.SetToolTip(this.TrkFan1Lvl, "GPU fan target. ~20 = quiet, 55 ≈ maximum. Needs 'Custom' + Set.");
+            this.Tip.SetToolTip(this.LblFan0Rte, "CPU fan actual duty (%).");
+            this.Tip.SetToolTip(this.LblFan1Rte, "GPU fan actual duty (%).");
+            this.Tip.SetToolTip(this.LblFanCountdown, "Seconds until the firmware reclaims fan control and this manual setting expires.");
+            this.Tip.SetToolTip(this.BtnFanSet, "Apply the selected fan option.");
 
-            // Keyboard
-            this.Tip.SetToolTip(this.ChkKbdBacklight, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + "Backlight"));
-            this.Tip.SetToolTip(this.CmbKbdColorPreset, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + "ColorPreset"));
-            this.Tip.SetToolTip(this.TxtKbdColorVal, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + "ColorVal"));
-            this.Tip.SetToolTip(this.BtnKbdColorPresetDel, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + "ColorPresetDel"));
-            this.Tip.SetToolTip(this.BtnKbdColorPresetSet, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + "ColorPresetSet"));
-            this.Tip.SetToolTip(this.PicKbd, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_KBD + Gui.T_PIC));
-
-            // System status
-            this.Tip.SetToolTip(this.GrpSys, Config.Locale.Get(Config.L_GUI_TIP + Gui.G_SYS));
-
-            // System status rich-text field is not enabled, and would not show its tooltip
-            // Temperature group has dynamic tooltips generated at runtime
+            this.Tip.SetToolTip(this.ChkKbdBacklight, "Toggle the keyboard backlight on or off.");
+            this.Tip.SetToolTip(this.CmbKbdZone, "Choose which zone the R/G/B sliders change. 'All zones' sets the whole keyboard to one uniform colour.");
+            this.Tip.SetToolTip(this.PicKbd, "Click a zone to edit it (and pick its colour in the full dialog). Zones are separated by the grooves.");
+            this.Tip.SetToolTip(this.TrkKbdR, "Red channel of the selected keyboard zone (0–255).");
+            this.Tip.SetToolTip(this.TrkKbdG, "Green channel of the selected keyboard zone (0–255).");
+            this.Tip.SetToolTip(this.TrkKbdB, "Blue channel of the selected keyboard zone (0–255).");
+            this.Tip.SetToolTip(this.PnlKbdSwatch, "Live preview of the selected zone's colour.");
+            this.Tip.SetToolTip(this.CmbKbdColorPreset, "Load a saved keyboard colour preset.");
+            this.Tip.SetToolTip(this.BtnKbdColorPresetSet, "Save the current colours as a new preset.");
+            this.Tip.SetToolTip(this.BtnKbdColorPresetDel, "Delete the selected preset.");
+            this.Tip.SetToolTip(this.TxtKbdColorVal, "Zone colours as hex (RRGGBB:RRGGBB:RRGGBB:RRGGBB). Editable.");
 #endregion
 
 #region Resume Layout
-            // End the initialization of components that specifically require it
             ((System.ComponentModel.ISupportInitialize) this.PicKbd).EndInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan0Lvl).EndInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan1Lvl).EndInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdR).EndInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdG).EndInit();
+            ((System.ComponentModel.ISupportInitialize) this.TrkKbdB).EndInit();
 
-            // Resume the layout
+            this.GrpChart.ResumeLayout(false);
+            this.GrpPwr.ResumeLayout(false);
             this.GrpFan.ResumeLayout(false);
             this.GrpKbd.ResumeLayout(false);
             this.GrpSys.ResumeLayout(false);
             this.GrpTmp.ResumeLayout(false);
             this.ResumeLayout(false);
-
-            // Also make a call to perform layout where necessary
             this.GrpKbd.PerformLayout();
-#endregion
 
-#region Component Events
-            // Fan
+            this.TrkKbdR.Scroll += EventKbdRgbScroll;
+            this.TrkKbdG.Scroll += EventKbdRgbScroll;
+            this.TrkKbdB.Scroll += EventKbdRgbScroll;
+
+            // Control Names — some handlers (EventFanRdoChanged, UpdateFanCtl) and the
+            // old lookups identify controls by Name, so restore the originals.
+            this.RdoFanAuto.Name  = Gui.T_RDO + Gui.G_FAN + "Auto";
+            this.RdoFanMax.Name   = Gui.T_RDO + Gui.G_FAN + "Max";
+            this.RdoFanOff.Name   = Gui.T_RDO + Gui.G_FAN + "Off";
+            this.RdoFanConst.Name = Gui.T_RDO + Gui.G_FAN + "Const";
+            this.RdoFanProg.Name  = Gui.T_RDO + Gui.G_FAN + "Prog";
+            this.CmbFanMode.Name  = Gui.T_CMB + Gui.G_FAN + "Mode";
+            this.CmbFanProg.Name  = Gui.T_CMB + Gui.G_FAN + "Prog";
+            this.TrkFan0Lvl.Name  = Gui.T_TRK + Gui.G_FAN + "0" + Gui.S_LVL;
+            this.TrkFan1Lvl.Name  = Gui.T_TRK + Gui.G_FAN + "1" + Gui.S_LVL;
+            this.CmbKbdColorPreset.Name = Gui.T_CMB + Gui.G_KBD + "ColorPreset";
+            this.PicKbd.Name = Gui.T_PIC + Gui.G_KBD;
+
+            // Control event wiring (unchanged from the original layout — restored here
+            // after the from-scratch rebuild; the handlers all live in GuiFormMain.cs).
             this.CmbFanProg.SelectionChangeCommitted += EventFanProgramChanged;
+            this.CmbFanProg.SelectionChangeCommitted += EventProfilePicked;
+            this.BtnProfAdd.Click += EventProfileAdd;
+            this.BtnProfDel.Click += EventProfileDel;
+            this.BtnCurveEdit.Click += EventCurveSave;
             this.CmbFanMode.SelectionChangeCommitted += EventFanModeChanged;
-            this.RdoFanAuto.CheckedChanged += EventFanRdoChanged;
+            this.RdoFanAuto.CheckedChanged  += EventFanRdoChanged;
             this.RdoFanConst.CheckedChanged += EventFanRdoChanged;
-            this.RdoFanOff.CheckedChanged += EventFanRdoChanged;
-            this.RdoFanMax.CheckedChanged += EventFanRdoChanged;
-            this.RdoFanProg.CheckedChanged += EventFanRdoChanged;
+            this.RdoFanOff.CheckedChanged   += EventFanRdoChanged;
+            this.RdoFanMax.CheckedChanged   += EventFanRdoChanged;
+            this.RdoFanProg.CheckedChanged  += EventFanRdoChanged;
             this.TrkFan0Lvl.ValueChanged += EventFanTrkChanged;
             this.TrkFan1Lvl.ValueChanged += EventFanTrkChanged;
+            // Profiles are the only fan mode now — force the program branch on Apply.
+            this.BtnFanSet.Click += (s, e) => { this.RdoFanProg.Checked = true; };
             this.BtnFanSet.Click += EventActionFanSet;
-
-            // Keyboard
+            this.RdoPwrEco.CheckedChanged    += EventPwrPreset;
+            this.RdoPwrBal.CheckedChanged    += EventPwrPreset;
+            this.RdoPwrPerf.CheckedChanged   += EventPwrPreset;
+            this.RdoPwrCustom.CheckedChanged += EventPwrPreset;
+            this.NumPwrWatt.ValueChanged     += EventPwrWattChanged;
+            this.ChkAutoStart.Click += EventActionAutoStart;
             this.ChkKbdBacklight.Click += EventActionBacklight;
             this.CmbKbdColorPreset.SelectionChangeCommitted += EventColorPreset;
             this.TxtKbdColorVal.TextChanged += EventColorInput;
             this.BtnKbdColorPresetDel.Click += EventActionColorPresetDel;
+            this.BtnKbdColorPresetRen.Click += EventActionColorPresetRen;
             this.BtnKbdColorPresetSet.Click += EventActionColorPresetSet;
             this.PicKbd.MouseClick += EventColorPick;
 #endregion
+        }
 
+        private void MakeMini(string text, Point at, Font f, Control parent) {
+            var l = new Label {
+                AutoSize = false, Text = text, Font = f, ForeColor = GuiTheme.Muted,
+                Location = at, Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleLeft,
+                BackColor = Color.Transparent
+            };
+            parent.Controls.Add(l);
+        }
+
+        private void SetupRgbSlider(TrackBar t, Point at) {
+            t.AutoSize = false;
+            t.Location = at;
+            t.Minimum = 0;
+            t.Maximum = 255;
+            t.TickFrequency = 64;
+            t.TickStyle = TickStyle.None;
+            t.Orientation = Orientation.Horizontal;
+            t.Size = new Size(96, 30);
+            t.TabStop = false;
         }
 #endregion
 
     }
-
 }

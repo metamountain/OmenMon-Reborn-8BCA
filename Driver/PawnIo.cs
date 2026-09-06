@@ -44,20 +44,20 @@ namespace OmenMon.Driver {
 
 #region P/Invoke
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern IntPtr LoadLibraryW(string fileName);
+        internal static extern IntPtr LoadLibraryW(string fileName);
 
         // PawnIO C ABI. All functions return HRESULT (0 = S_OK).
         [DllImport(DllName, ExactSpelling = true)]
-        private static extern int pawnio_version(out uint version);
+        internal static extern int pawnio_version(out uint version);
 
         [DllImport(DllName, ExactSpelling = true)]
-        private static extern int pawnio_open(out IntPtr handle);
+        internal static extern int pawnio_open(out IntPtr handle);
 
         [DllImport(DllName, ExactSpelling = true)]
-        private static extern int pawnio_load(IntPtr handle, byte[] blob, IntPtr size);
+        internal static extern int pawnio_load(IntPtr handle, byte[] blob, IntPtr size);
 
         [DllImport(DllName, ExactSpelling = true, CharSet = CharSet.Ansi, BestFitMapping = false)]
-        private static extern int pawnio_execute(
+        internal static extern int pawnio_execute(
             IntPtr handle,
             string name,
             ulong[] inArray,  IntPtr inSize,
@@ -65,7 +65,7 @@ namespace OmenMon.Driver {
             out IntPtr returnSize);
 
         [DllImport(DllName, ExactSpelling = true)]
-        private static extern int pawnio_close(IntPtr handle);
+        internal static extern int pawnio_close(IntPtr handle);
 #endregion
 
 #region Lifecycle
@@ -153,7 +153,7 @@ namespace OmenMon.Driver {
 #endregion
 
 #region Helpers
-        private static string LocatePawnIoLib() {
+        internal static string LocatePawnIoLib() {
             // Registry hint set by the PawnIO installer (best effort).
             try {
                 using RegistryKey key = RegistryKey

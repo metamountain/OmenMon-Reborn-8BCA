@@ -150,6 +150,12 @@ namespace OmenMon {
         // Handles an error depending on whether the application is running in CLI or GUI mode
         public static void Error(string messageIds, Exception e = null) {
 
+            // Everything the user is shown also goes to OmenMon-error.log. Errors that
+            // only appear now and then — the EC lock timeout, a failed configuration
+            // save — are the ones hardest to catch in the act, and a dialog the user
+            // dismisses leaves nothing behind to analyse afterwards.
+            Config.ErrorLog(messageIds, e);
+
             if(Cli.IsInitialized)
 
                 // Error out to the console
@@ -186,6 +192,9 @@ namespace OmenMon {
                 // Close the hardware, if opened
                 if(Hw.IsInitialized)
                     Hw.Close();
+
+                // Release the AMD SMN module handle, if one was ever opened
+                OmenMon.Driver.PawnIoAmd.Close();
 
                 // Free the console, if running as a CLI app
                 if(Cli.IsInitialized)

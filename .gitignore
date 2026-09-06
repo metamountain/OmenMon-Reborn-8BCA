@@ -7,3 +7,6 @@ obj/
 OmenMon.manifest
 OmenMon.resx
 OmenMon.exe.config
+
+# Local icon backups (upstream originals, kept while iterating)
+Resources/*.ico.orig

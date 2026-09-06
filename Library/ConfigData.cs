@@ -125,6 +125,58 @@ namespace OmenMon.Library {
         // Prefix for default color presets, name to be resolved through locale
         public const string ColorPresetDefaultPrefix = "Default";
 
+        // Display identity, deliberately separate from AppName.
+        //
+        // AppName is the assembly name ("OmenMon") and has to stay exactly that: the
+        // settings-XML root element <OmenMon>, the scheduled-task names and the mutex
+        // names are all derived from it, so changing it would orphan an existing
+        // configuration. Everything the user reads goes through the two below instead,
+        // so the window title, the About box and the error report cannot drift apart.
+        //
+        // The board ID is the suffix because that is the string another owner of the
+        // same machine searches for - HP support threads, OmenMon's KnownBoards table,
+        // the calibration reports and the Linux OMEN tools all key on it.
+        public const string ProductName = "OmenMon Reborn";
+
+        private static string boardId;
+        public static string BoardId {
+            get {
+                if(boardId != null)
+                    return boardId;
+
+                // Explicit override first, for testing another board's naming
+                boardId = Environment.GetEnvironmentVariable("OMENMON_MODEL");
+
+                if(string.IsNullOrEmpty(boardId))
+                    try {
+                        boardId = (Microsoft.Win32.Registry.GetValue(
+                            @"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\BIOS",
+                            "BaseBoardProduct", null) as string)?.Trim();
+                    } catch { }
+
+                // Fall back to the DMI system product name
+                // ("OMEN by HP Gaming Laptop 16-xf0xxx" -> "16-xf0xxx")
+                if(string.IsNullOrEmpty(boardId))
+                    try {
+                        string model = (Microsoft.Win32.Registry.GetValue(
+                            @"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\BIOS",
+                            "SystemProductName", null) as string)?.Trim();
+                        if(!string.IsNullOrEmpty(model))
+                            boardId = model.Replace("by HP Gaming Laptop ", "")
+                                           .Replace("by HP ", "").Replace("Gaming Laptop ", "").Trim();
+                    } catch { }
+
+                return boardId = boardId ?? "";
+            }
+        }
+
+        // "OmenMon Reborn 8BCA" - the name shown in the title bar and in error reports
+        public static string DisplayName {
+            get {
+                return string.IsNullOrEmpty(BoardId) ? ProductName : ProductName + " " + BoardId;
+            }
+        }
+
         // DPI scaling factors, for responding to system DPI changes while the application is running
         public const int DpiSizeAdjFactorX = 10; // Divided by 100
         public const int DpiSizeAdjFactorY = 33; // Divided by 100
@@ -132,6 +184,14 @@ namespace OmenMon.Library {
         // Embedded Controller operation parameters
         public static int EcMonInterval  = 1000; // Embedded Controller monitoring interval
         public static int EcMutexTimeout =  200; // How long before bailing out trying to get a mutex
+
+        // Total budget for acquiring the EC mutex, across repeated EcMutexTimeout attempts.
+        // A single attempt made any moment of contention a modal error, and the usual
+        // holder is OmenMon's own monitor thread mid-batch rather than another
+        // application, so a short retry loop resolves what used to be an error dialog.
+        // Set equal to (or below) EcMutexTimeout to restore the old single-attempt
+        // behaviour.
+        public static int EcMutexTotalTimeout = 2500;
 
         public static int EcFailLimit  = 15;  // Maximum number of failed attempts waiting to read
         public static int EcRetryLimit =  3;  // Maximum number of read and write attempts
@@ -218,6 +278,33 @@ namespace OmenMon.Library {
         // Two additional colors for the RTF text box with better readability
         public const int GuiColorTextBlue = unchecked((int) 0xFF4182C9); // Blue
         public const int GuiColorTextTeal = unchecked((int) 0xFF0C9D7A); // Teal
+
+        // Palette for the system-information strip at the bottom of the window.
+        // The original table put system grey in slot 1 and pure black in slot 2, which
+        // on the dark UI left the status line black-on-near-black; slots 3-6 were fully
+        // saturated primaries that glared against it. These are the dark-mode
+        // equivalents, matching the GuiTheme palette: muted grey for field labels,
+        // near-white for the status line, and desaturated state colours.
+        public const int GuiColorRtfLabel  = unchecked((int) 0xFF9A9AA4); // 1: field labels
+        public const int GuiColorRtfText   = unchecked((int) 0xFFF4F4F5); // 2: status line
+        public const int GuiColorRtfOk     = unchecked((int) 0xFF4ADE80); // 3: green, "OK"
+        public const int GuiColorRtfWarn   = unchecked((int) 0xFFF87171); // 4: red, fault
+        public const int GuiColorRtfValue  = unchecked((int) 0xFF60A5FA); // 5: blue, values
+        public const int GuiColorRtfFlag   = unchecked((int) 0xFFC084FC); // 6: violet, flags
+
+        // Builds the RTF colour table header. Kept in one place because the same table
+        // is needed both as the compile-time default and after the configuration loads
+        public static string BuildSysInfoRtfHeader() {
+            return SysInfoRtfPreHeader
+                + "{\\colortbl;"
+                + Conv.GetColorStringRtf(GuiColorRtfLabel)
+                + Conv.GetColorStringRtf(GuiColorRtfText)
+                + Conv.GetColorStringRtf(GuiColorRtfOk)
+                + Conv.GetColorStringRtf(GuiColorRtfWarn)
+                + Conv.GetColorStringRtf(GuiColorRtfValue)
+                + Conv.GetColorStringRtf(GuiColorRtfFlag)
+                + "}";
+        }
 
         // Color to draw the keyboard in if the backlight is off
         public static int GuiColorKbdBacklightOff = System.Drawing.SystemColors.Control.ToArgb();
@@ -384,15 +471,8 @@ namespace OmenMon.Library {
 
         // System information rich-text field settings
         public const string SysInfoRtfPreHeader = "{\\rtf1\\ansi\\ansicpg1252\\deff0";
-        public static string SysInfoRtfHeader = SysInfoRtfPreHeader +
-            "{\\colortbl;" // Overriden at runtime, in case the color values changed (currently won't)
-            + Conv.GetColorStringRtf(SystemColors.GrayText.ToArgb())  // System Gray
-            + Conv.GetColorStringRtf(0)                               // Black
-            + Conv.GetColorStringRtf(GuiColorTextTeal)                // Teal
-            + Conv.GetColorStringRtf(GuiColorWarmDark)                // Red
-            + Conv.GetColorStringRtf(GuiColorTextBlue)                // Blue
-            + Conv.GetColorStringRtf(GuiColorWarmLite)                // Fuchsia
-            + "}";
+        public static string SysInfoRtfHeader = BuildSysInfoRtfHeader();
+
         public const string SysInfoRtfFooter = " }";
 
         // Folder where scheduled tasks are stored

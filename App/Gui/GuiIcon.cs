@@ -96,21 +96,28 @@ namespace OmenMon.AppGui {
                 // Note: ClearTypeGridFit yields suboptimal results,
                 // it's a tie between AntiAliasGridFit or SingleBitPerPixelGridFit
 
-                // Render either the cool or warm gradient as a background, if requested
-                if(this.IsDynamicBackground)
-                    Canvas.FillPolygon(
-                        new LinearGradientBrush(
-                            this.Box, // The entire drawing surface
-                            Color.FromArgb(this.Background == BackgroundType.Cool ? Config.GuiColorCoolDark : Config.GuiColorWarmDark),
-                            Color.FromArgb(this.Background == BackgroundType.Cool ? Config.GuiColorCoolLite : Config.GuiColorWarmLite),
-                            this.Background == BackgroundType.Cool ? LinearGradientMode.Vertical : LinearGradientMode.Horizontal),
-                        new Point[] { // The shape of a diamond
-                            new Point(Size.Width / 2, 0),
-                            new Point(Size.Width, Size.Height / 2),
-                            new Point(Size.Width / 2, Size.Height),
-                            new Point(0, Size.Height / 2),
-                            new Point(Size.Width / 2, 0)
-                        });
+                // Render the background, if requested: a solid black OMEN diamond with a
+                // thin white edge. This used to be a cool-or-warm gradient keyed on
+                // temperature, which was the last colour left anywhere in the tray. The
+                // edge earns its place — a pure black fill vanishes on the default dark
+                // taskbar and would leave the digits floating with no icon around them.
+                if(this.IsDynamicBackground) {
+
+                    Point[] diamond = new Point[] {
+                        new Point(Size.Width / 2, 0),
+                        new Point(Size.Width, Size.Height / 2),
+                        new Point(Size.Width / 2, Size.Height),
+                        new Point(0, Size.Height / 2),
+                        new Point(Size.Width / 2, 0)
+                    };
+
+                    Canvas.FillPolygon(Brushes.Black, diamond);
+
+                    // Inset by half the pen width so the stroke stays inside the icon box
+                    using(Pen edge = new Pen(Color.White, Math.Max(1f, Size.Width / 20f)))
+                        Canvas.DrawPolygon(edge, diamond);
+
+                }
 
                 // Otherwise still have to draw something, or the background
                 // will remain all black until the next update (GDI bug?)

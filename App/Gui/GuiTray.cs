@@ -109,6 +109,9 @@ namespace OmenMon.AppGui {
         // category (the fan-program tick counter lives in GuiMonitor now)
         internal int UpdateIconTick;
         internal int UpdateMonitorTick;
+
+        // Set once the main window has been built ahead of the first click
+        private bool FormMainPrewarmed;
 #endregion
 
 #region Construction & Disposal
@@ -149,6 +152,11 @@ namespace OmenMon.AppGui {
             this.Notification.ContextMenuStrip.Closing += Menu.EventClosing;
             this.Notification.ContextMenuStrip.ItemClicked += Menu.EventItemClicked;
             this.Notification.ContextMenuStrip.Opening += Menu.EventOpening;
+            // Both mouse buttons open the main window; the tray menu no longer pops up
+            // on right-click (it is reached from the window's "Menu" button, or by a
+            // middle-click on the icon). The guard below cancels the automatic open.
+            this.Notification.ContextMenuStrip.Opening += EventMenuOpeningGuard;
+            this.Notification.MouseDown += EventIconMouseDown;
             this.Notification.MouseClick += EventIconMouseClick;
 
             // Add a filter to intercept any custom messages
@@ -251,13 +259,38 @@ namespace OmenMon.AppGui {
 #endregion
 
 #region Event Handlers
+        // True while a tray right-click is in flight, so the automatic context-menu
+        // open that NotifyIcon performs on mouse-up can be cancelled.
+        private bool SuppressTrayMenu;
+
+        private void EventIconMouseDown(object sender, MouseEventArgs e) {
+            if(e.Button == MouseButtons.Right)
+                this.SuppressTrayMenu = true;
+        }
+
+        // Cancels the automatic right-click menu; deliberate opens clear the flag first.
+        private void EventMenuOpeningGuard(object sender, System.ComponentModel.CancelEventArgs e) {
+            if(this.SuppressTrayMenu) {
+                this.SuppressTrayMenu = false;
+                e.Cancel = true;
+            }
+        }
+
+        // Shows the tray menu on purpose (window "Menu" button, middle-click).
+        internal void ShowTrayMenu() {
+            this.SuppressTrayMenu = false;
+            try { this.Notification.ContextMenuStrip.Show(Cursor.Position); } catch { }
+        }
+
         // Handles a click event on the notification icon
         private void EventIconMouseClick(object sender, MouseEventArgs e) {
 
-            // Toggle the main GUI form on left click
-            // Note: right click is reserved for the context menu
-            if(e.Button == MouseButtons.Left)
+            // Both buttons open/close the main window — the context menu is no longer
+            // bound to right-click (it was awkward to hit). Middle-click still shows it.
+            if(e.Button == MouseButtons.Left || e.Button == MouseButtons.Right)
                 ToggleFormMain();
+            else if(e.Button == MouseButtons.Middle)
+                ShowTrayMenu();
 
         }
 
@@ -524,9 +557,19 @@ namespace OmenMon.AppGui {
         // Shows the main GUI form
         public void ShowFormMain() {
 
-            // Set up the form first if it hasn't been created yet
-            if(this.FormMain == null)
-                this.FormMain = new GuiFormMain();
+            // Set up the form first if it hasn't been created yet. Normally the
+            // pre-warm on the timer tick has already done this, so the click is
+            // instant; the wait cursor covers the cold path (first click before the
+            // first monitor sample, or after the form was disposed).
+            if(this.FormMain == null) {
+                Cursor previous = Cursor.Current;
+                Cursor.Current = Cursors.AppStarting;
+                try {
+                    this.FormMain = new GuiFormMain();
+                } finally {
+                    Cursor.Current = previous;
+                }
+            }
 
             // Show the form if not visible.
             // Show() must come before ShowToFront() — calling Win32 ShowWindow on a
@@ -590,12 +633,26 @@ namespace OmenMon.AppGui {
             if(this.UpdateMonitorTick >= Config.UpdateMonitorInterval)
                 this.UpdateMonitorTick = 0;
 
+            // Pre-warm the main window in the background once the first snapshot exists.
+            // Building it costs ~60 controls plus the keyboard bitmap; paying that on the
+            // first tray click is what made opening feel like it hung. Done here (UI
+            // thread, idle tick) it is invisible, and .Handle forces the native window to
+            // be created too so Show() is just a visibility flip.
+            if(!this.FormMainPrewarmed && snap != null && this.FormMain == null) {
+                this.FormMainPrewarmed = true;
+                try {
+                    this.FormMain = new GuiFormMain();
+                    IntPtr warm = this.FormMain.Handle;   // force handle creation
+                } catch { }
+            }
+
             // Render the main form from the snapshot, only if visible
             if(this.FormMain != null && this.FormMain.Visible
                 && this.UpdateMonitorTick++ == 0 && snap != null) {
                 this.FormMain.UpdateFan();
                 this.FormMain.UpdateSys();
                 this.FormMain.UpdateTmp();
+                this.FormMain.UpdateChartTick();
             }
 
             // Render the notification icon and tray tooltip from the snapshot.

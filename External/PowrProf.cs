@@ -47,6 +47,21 @@ namespace OmenMon.External {
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         public static extern uint PowerUnregisterSuspendResumeNotification(
             IntPtr RegistrationHandle);
+
+        // Windows 10/11 "Power Mode" overlay scheme (the slider that replaced power
+        // plans on Modern Standby machines). Get/Set take the overlay GUID.
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern uint PowerSetActiveOverlayScheme(Guid OverlaySchemeGuid);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern uint PowerGetActualOverlayScheme(out Guid ActualOverlayGuid);
+
+        // Overlay GUIDs
+        public static readonly Guid OVERLAY_EFFICIENCY  = new Guid("961cc777-2547-4f9d-8174-7d86181b8a7a");
+        public static readonly Guid OVERLAY_BALANCED    = Guid.Empty;
+        public static readonly Guid OVERLAY_PERFORMANCE = new Guid("ded574b5-45a0-4f42-8737-46345c09c238");
 #endregion
 
     }

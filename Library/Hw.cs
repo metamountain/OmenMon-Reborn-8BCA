@@ -3,6 +3,7 @@
      //  https://omenmon.github.io/
 
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Collections.Generic;
 using Microsoft.Win32;
@@ -205,10 +206,87 @@ namespace OmenMon.Library {
         private static int ecLockTimeoutCount;
         public static int EcLockTimeoutCount { get { return ecLockTimeoutCount; } }
 
+        // Processes known to take Global\Access_EC. Naming the competitor in the log turns
+        // "failed to acquire the EC lock" from an unexplained pop-up into something
+        // actionable — on this hardware it is almost always HP's own Omen Gaming Hub
+        // background service, which polls the EC on its own schedule.
+        private static readonly string[] EcContenderNames = {
+            "OmenCommandCenterBackground", "OMEN Gaming Hub", "HPOmenCap",
+            "HP.Omen.Command.Center", "HPSystemEventUtility", "HPSysInfoCLI",
+            "LibreHardwareMonitor", "OpenHardwareMonitor", "HWiNFO64", "HWiNFO32",
+            "AIDA64", "RTSS", "MSIAfterburner", "SpeedFan", "NBFC", "FanControl"
+        };
+
+        // Lists the EC-using processes running right now, plus any second OmenMon
+        private static string EcContenders() {
+            try {
+                List<string> found = new List<string>();
+                Process self = Process.GetCurrentProcess();
+                foreach(Process p in Process.GetProcesses()) {
+                    try {
+                        if(p.Id == self.Id)
+                            continue;
+                        if(string.Equals(p.ProcessName, self.ProcessName, StringComparison.OrdinalIgnoreCase)) {
+                            found.Add(p.ProcessName + "(pid " + p.Id + ", second instance)");
+                            continue;
+                        }
+                        foreach(string name in EcContenderNames)
+                            if(string.Equals(p.ProcessName, name, StringComparison.OrdinalIgnoreCase)) {
+                                found.Add(p.ProcessName + "(pid " + p.Id + ")");
+                                break;
+                            }
+                    } catch { }
+                }
+                return found.Count == 0 ? "none detected" : string.Join(", ", found);
+            } catch {
+                return "?";
+            }
+        }
+
+        // Acquires Global\Access_EC, retrying across a bounded total budget.
+        //
+        // A single Request(EcMutexTimeout) attempt turned any moment of contention into a
+        // modal error. In practice the lock is held far more often by OmenMon's own
+        // monitor thread mid-batch than by another application — the first reported
+        // timeout on board 8BCA logged "other EC users: none detected" — and Ec.cs's
+        // read backoff Wait()s while holding it, so one slow sensor pass can outlast the
+        // whole window. A batch finishes well inside the budget, so retrying turns what
+        // was an error dialog into a pause the user does not notice.
+        //
+        // The per-attempt timeout stays EcMutexTimeout, so a caller that genuinely cannot
+        // get the lock still gives up in bounded time rather than hanging the UI thread.
+        private static bool EcRequest(IEmbeddedController ec) {
+            int waited = 0;
+            while(true) {
+                if(ec.Request(Config.EcMutexTimeout))
+                    return true;
+                waited += Config.EcMutexTimeout;
+                if(waited >= Config.EcMutexTotalTimeout)
+                    return false;
+
+                // Yield briefly so the holder can finish and release
+                Thread.Sleep(EcRequestRetryDelay);
+                waited += EcRequestRetryDelay;
+            }
+        }
+
+        private const int EcRequestRetryDelay = 15;
+
         // Records an EC mutex acquisition timeout and reports it unless the
         // current thread opted into quiet (retry-next-tick) handling
         private static void EcLockTimeout() {
-            Interlocked.Increment(ref ecLockTimeoutCount);
+            int count = Interlocked.Increment(ref ecLockTimeoutCount);
+
+            // Log every timeout the user is shown, and a sample of the quiet ones. The
+            // quiet path can fire once per monitor tick while another process holds the
+            // lock, so logging all of them would bury everything else in the file.
+            if(!EcLockQuiet || count <= 5 || count % 25 == 0)
+                Config.ErrorLog("Hw.EcLockTimeout", null,
+                    "waited " + Config.EcMutexTimeout + " ms for Global\\Access_EC"
+                        + "; timeout #" + count
+                        + (EcLockQuiet ? " (quiet, retried on the next tick)" : " (user-visible)")
+                        + "; other EC users: " + EcContenders());
+
             if(!EcLockQuiet)
                 App.Error("ErrEcLock");
         }
@@ -239,7 +317,7 @@ namespace OmenMon.Library {
 
         // Runs operations while the Embedded Controller is locked for exclusive use
         public static void EcExec(Action<IEmbeddedController> callback, IEmbeddedController ec) {
-            if(ec.Request(Config.EcMutexTimeout)) {
+            if(EcRequest(ec)) {
                 try {
                     callback(ec);
                 } finally {
@@ -253,7 +331,7 @@ namespace OmenMon.Library {
 
         // Runs operations while the Embedded Controller is locked for exclusive use and returns a result
         public static TResult EcExec<TResult>(Func<IEmbeddedController,TResult> callback, IEmbeddedController ec) {
-            if(ec.Request(Config.EcMutexTimeout)) {
+            if(EcRequest(ec)) {
                 try {
                     return (TResult) callback(ec);
                 } finally {
@@ -299,7 +377,7 @@ namespace OmenMon.Library {
                 Ec = EcInterface();
             if(Ec == null || !Ec.IsInitialized)
                 return false;
-            if(Ec.Request(Config.EcMutexTimeout)) {
+            if(EcRequest(Ec)) {
                 try {
                     body();
                 } finally {

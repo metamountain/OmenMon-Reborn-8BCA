@@ -276,6 +276,16 @@ namespace OmenMon.AppGui {
                 int val = plat.Temperature[i].GetValue();
                 s.TempValue[i] = val;
                 s.TempTrend[i] = plat.Temperature[i].GetValueTrend();
+
+                // Honour the per-sensor Use flag from OmenMon.xml. Without this a
+                // sensor disabled in the configuration still fed CpuTemp/GpuTemp —
+                // which on 8BCA meant EC CPUT (firmware string data, values in the
+                // ASCII punctuation range: 0x36=54, 0x2B=43, 0x2A=42 …) kept winning
+                // the max() below and the reported CPU temperature was uncorrelated
+                // with the real die temperature.
+                if(i < plat.TemperatureUse.Length && !plat.TemperatureUse[i])
+                    continue;
+
                 if(name == "CPUT" && val > 0) cpu = val;
                 else if(name == "GPTM" && val > 0) gpu = val;
                 else if(name == "BIOS" && val > 0) bios = val;
@@ -285,9 +295,34 @@ namespace OmenMon.AppGui {
             // reading 0xFF→0 (8C9C, 8BBE, …) and CPUT stuck on a constant non-zero
             // byte of firmware string data (8D87 reads a permanent 52 — issue #97).
             if(bios > cpu) cpu = bios;
+
+            // Prefer the CPU's own sensor when it is reachable. Tctl/Tdie comes straight
+            // from the die over the SMN, so it is immune to the firmware-string problem
+            // that makes every EC and WMI CPU-temperature source on this board useless —
+            // and it tracks load in real time instead of lagging the EC's smoothing.
+            // Falls back to the EC/BIOS value wherever the module is unavailable.
+            //
+            // Median-of-3 before it is used, because that immediacy cuts both ways: Zen
+            // boosts hard on any brief foreground task, so the raw reading spikes 30 °C
+            // for a single sample at idle. The EC value was smoothed in firmware; feeding
+            // the unsmoothed die straight into MaxTemp would have the fan programs chase
+            // every transient. Three samples is enough to drop a lone spike while still
+            // reacting within a few seconds of a real load.
+            double die;
+            if(OmenMon.Driver.PawnIoAmd.TryGetCpuTemperature(out die) && die > 0.0 && die < 125.0) {
+                dieHistory[dieCount++ % dieHistory.Length] = (int) Math.Round(die);
+                cpu = dieCount >= dieHistory.Length
+                    ? Median3(dieHistory[0], dieHistory[1], dieHistory[2])
+                    : (int) Math.Round(die);
+            }
+
             s.CpuTemp = cpu;
             s.GpuTemp = gpu;
             s.MaxTemp = plat.GetMaxTemperature(false); // temps already refreshed above
+
+            // GetMaxTemperature() only sees the EC/BIOS sensors, so a die reading that
+            // outruns them has to be folded in by hand — the fan programs key off this
+            if(s.CpuTemp > s.MaxTemp) s.MaxTemp = s.CpuTemp;
 
             // The dynamic-icon warm/cool background needs the fan mode even with the form
             // hidden, so it is always sampled.
@@ -327,6 +362,21 @@ namespace OmenMon.AppGui {
                 s.GpuPower     = sys.GetGpuPower();        // …and cached for the GPU menu
                 s.Throttling   = sys.GetThrottling();
                 s.HasFanSys = true;
+
+                // Rolling diagnostic CSV — one row per full pass. Sensor dropouts are
+                // bridged with the last plausible value so the log is analysable; a
+                // logged 0 is indistinguishable from a genuinely cold sensor otherwise.
+                try {
+                    TelemetryLog.Write(
+                        LogSane(s.CpuTemp, 1, 120, ref logCpuT),
+                        LogSane(s.GpuTemp, 1, 120, ref logGpuT),
+                        LogSane(s.MaxTemp, 1, 120, ref logMaxT),
+                        LogSane(s.FanSpeed[0], 1, 9000, ref logCpuR),
+                        LogSane(s.FanSpeed[1], 1, 9000, ref logGpuR),
+                        s.FanLevel[0], s.FanLevel[1],
+                        s.FanRate[0], s.FanRate[1],
+                        s.Mode.ToString(), s.ProgramName, s.Countdown);
+                } catch { }
 
             } else {
 
@@ -369,11 +419,45 @@ namespace OmenMon.AppGui {
         // action). Runs the read pass on the calling thread — acceptable because it is
         // user-initiated and bounded, unlike the per-tick passive polling this class
         // removes from the UI thread. Re-entrant against Op.HardwareLock.
+        // Last plausible logged values, used to bridge sensor dropouts in the CSV
+        private int logCpuT, logGpuT, logMaxT, logCpuR, logGpuR;
+
+        // Background telemetry cadence, in monitor loop iterations (~1 s each)
+        private const int TelemetryEvery = 30;
+        private int TelemetryTick;
+
+        // Rolling window over the AMD die temperature, for the median-of-3 in Sample()
+        private readonly int[] dieHistory = new int[3];
+        private int dieCount;
+
+        // Middle of three values, without sorting
+        private static int Median3(int a, int b, int c) {
+            if(a > b) { int t = a; a = b; b = t; }
+            if(b > c) { int t = b; b = c; c = t; }
+            return a > b ? a : b;
+        }
+
+        private static int LogSane(int v, int lo, int hi, ref int last) {
+            if(v >= lo && v <= hi) { last = v; return v; }
+            return last;
+        }
+
         public MonitorSnapshot SampleNow(bool full = true) {
-            lock(Context.Op.HardwareLock) {
-                MonitorSnapshot s = Sample(full);
-                this.CurrentSnapshot = s;
-                return s;
+            // A bulk sensor refresh is always recoverable: if the EC mutex is held by
+            // someone else (HP services, the ACPI driver, our own monitor thread) the
+            // right answer is to keep the previous snapshot for one cycle, not to throw
+            // a modal "failed to acquire embedded controller exclusive lock" box at the
+            // user. Genuine single-shot user writes (fan set, keyboard colour) stay loud.
+            bool wasQuiet = Hw.EcLockQuiet;
+            Hw.EcLockQuiet = true;
+            try {
+                lock(Context.Op.HardwareLock) {
+                    MonitorSnapshot s = Sample(full);
+                    this.CurrentSnapshot = s;
+                    return s;
+                }
+            } finally {
+                Hw.EcLockQuiet = wasQuiet;
             }
         }
 #endregion
@@ -472,12 +556,25 @@ namespace OmenMon.AppGui {
             if(fullRequest)
                 this.FullSamplePending = false;
 
+            // Telemetry heartbeat: a full sample every TelemetryEvery seconds even with
+            // the window closed, so the diagnostic log is continuous. Full samples are
+            // otherwise gated on form visibility to keep the hardware-access footprint
+            // small, so this runs an order of magnitude slower than the on-screen
+            // refresh — enough for a temperature/rpm history, cheap enough not to add
+            // meaningful EC-mutex contention.
+            bool telemetryFire = TelemetryLog.Enabled
+                && (++this.TelemetryTick >= TelemetryEvery);
+            if(telemetryFire)
+                this.TelemetryTick = 0;
+
             bool sample = fullRequest
                 || (monitorFire && formVisible)
+                || telemetryFire
                 || (iconFire && (dynamicIcon || panicActive));
             if(sample) {
                 lock(op.HardwareLock) {
-                    MonitorSnapshot s = Sample(formVisible || fullRequest, programRefreshedTemps);
+                    MonitorSnapshot s = Sample(
+                        formVisible || fullRequest || telemetryFire, programRefreshedTemps);
                     // Overtemperature protection runs on a fresh, hardware-verified reading
                     // whenever it is enabled (or still latched and needs clearing) —
                     // unchanged from the legacy icon-tick behaviour, just off the UI thread.

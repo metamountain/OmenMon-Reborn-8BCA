@@ -253,6 +253,9 @@ namespace OmenMon.Library {
                     if(GetWord(xml, XmlPrefix + "EcMutexTimeout", out value))
                         EcMutexTimeout = value;
 
+                    if(GetWord(xml, XmlPrefix + "EcMutexTotalTimeout", out value))
+                        EcMutexTotalTimeout = value;
+
                     if(GetWord(xml, XmlPrefix + "EcRetryLimit", out value))
                         EcRetryLimit = value;
 
@@ -387,15 +390,8 @@ namespace OmenMon.Library {
                         ColorPreset = ColorPresetXml;
 
                     // Populate the RTF header with colors at run-time
-                    SysInfoRtfHeader = SysInfoRtfPreHeader + 
-                        "{\\colortbl;"
-                        + Conv.GetColorStringRtf(SystemColors.GrayText.ToArgb())  // System Gray
-                        + Conv.GetColorStringRtf(0)                               // Black
-                        + Conv.GetColorStringRtf(GuiColorTextTeal)                // Teal
-                        + Conv.GetColorStringRtf(GuiColorWarmDark)                // Red
-                        + Conv.GetColorStringRtf(GuiColorTextBlue)                // Blue
-                        + Conv.GetColorStringRtf(GuiColorWarmLite)                // Fuchsia
-                        + "}";
+                    SysInfoRtfHeader = BuildSysInfoRtfHeader();
+
 
                     // Load the temperature sensors
                     bool usable = false;
@@ -696,6 +692,7 @@ namespace OmenMon.Library {
                     SetUInt(xml, XmlPrefix + "EcFailLimit", (uint) EcFailLimit);
                     SetUInt(xml, XmlPrefix + "EcMonInterval", (uint) EcMonInterval);
                     SetUInt(xml, XmlPrefix + "EcMutexTimeout", (uint) EcMutexTimeout);
+                    SetUInt(xml, XmlPrefix + "EcMutexTotalTimeout", (uint) EcMutexTotalTimeout);
                     SetUInt(xml, XmlPrefix + "EcRetryLimit", (uint) EcRetryLimit);
                     SetUInt(xml, XmlPrefix + "EcWaitLimit", (uint) EcWaitLimit);
                     SetUInt(xml, XmlPrefix + "EcWaitSpinCount", (uint) EcWaitSpinCount);
@@ -852,18 +849,67 @@ namespace OmenMon.Library {
                     xmlWriterSettings.Indent = true;
                     xmlWriterSettings.IndentChars = XmlSaveIndent;
                     xmlWriterSettings.NewLineHandling = NewLineHandling.Replace;
-                    using(XmlWriter xmlWriter = XmlWriter.Create(FilePath, xmlWriterSettings))
+                    // Write to a sibling temporary file first, then swap it in. XmlWriter
+                    // truncates its target up front, so writing straight to FilePath means
+                    // a failure part-way through leaves OmenMon.xml half-written
+                    string tempPath = FilePath + ".tmp";
+                    using(XmlWriter xmlWriter = XmlWriter.Create(tempPath, xmlWriterSettings))
                         xml.Save(xmlWriter);
+                    if(File.Exists(FilePath))
+                        File.Replace(tempPath, FilePath, null);
+                    else
+                        File.Move(tempPath, FilePath);
 
-                } catch {
+                } catch(Exception e) {
 
-                    // Show an error message if the settings could not be saved
-                    App.Error("ErrConfigSave");
+                    // Record why. The bare catch this replaces hid the reason, which made a
+                    // failed save look like it had worked: the in-memory dictionaries keep
+                    // the change, so it survives until the next restart and no further
+                    ErrorLog("Config.Save", e);
+
+                    // Show an error message if the settings could not be saved.
+                    // Pass the exception through: without it the dialog could only say
+                    // that saving failed, never which file or why
+                    App.Error("ErrConfigSave", e);
 
                 }
 
             }
 
+        }
+
+        // Appends a one-line record to OmenMon-error.log, kept next to the configuration
+        // file. Every error the user is shown goes here, plus swallowed exceptions and a
+        // sample of the failures that are retried silently, so a fault that only happens
+        // occasionally can still be analysed after the fact.
+        // Never throws: logging a failure must not become a second failure.
+        public const string ErrorLogName = "OmenMon-error.log";
+        private const long ErrorLogMaxBytes = 1024 * 1024;
+
+        public static void ErrorLog(string context, Exception e = null, string detail = null) {
+            try {
+                string dir = Path.GetDirectoryName(FilePath);
+                if(string.IsNullOrEmpty(dir))
+                    dir = AppDomain.CurrentDomain.BaseDirectory;
+                string path = Path.Combine(dir, ErrorLogName);
+
+                // Roll over rather than grow without bound; one generation is kept
+                try {
+                    FileInfo info = new FileInfo(path);
+                    if(info.Exists && info.Length > ErrorLogMaxBytes) {
+                        string old = path + ".1";
+                        if(File.Exists(old)) File.Delete(old);
+                        File.Move(path, old);
+                    }
+                } catch { }
+
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + context;
+                if(!string.IsNullOrEmpty(detail))
+                    line += ": " + detail;
+                if(e != null)
+                    line += ": " + e.GetType().Name + ": " + e.Message;
+                File.AppendAllText(path, line + Environment.NewLine);
+            } catch { }
         }
 
         // Adds or updates a model preset in the dictionary and persists to XML

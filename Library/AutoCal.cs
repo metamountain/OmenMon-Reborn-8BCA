@@ -163,6 +163,23 @@ namespace OmenMon.Library {
             string path = SidecarPath;
             if(!File.Exists(path)) return false;
 
+            // --- Auto-calibration sidecars are disabled in this build ---------------
+            // The Auto-Calibration Wizard infers tachometer registers from a 4-step fan
+            // sweep. On boards that expose no usable EC tachometer it cannot fail
+            // safely: on 8BCA it produced a "confirmed" 16-bit LE tachometer at 0xF1
+            // (actually noise — 04 05 / 01 0B / 03 14 in an unused region, accepted
+            // because its return-to-idle check treated 12 as "returned" from an idle of
+            // 1284), and on a second run minutes later found nothing at all. Either
+            // result gets written here and then overrides the hand-verified
+            // KnownBoards mapping on the next launch.
+            //
+            // The verified mapping (KnownBoards) is the single source of truth now, so
+            // any sidecar found is deleted rather than applied.
+            try { File.Delete(path); } catch { }
+            return false;
+#pragma warning disable 0162 // unreachable code — retained for reference / re-enable
+
+
             try {
                 // Harden the parser against XXE / external-entity expansion. The
                 // sidecar is technically user-writable on disk and we have no reason
@@ -286,6 +303,7 @@ namespace OmenMon.Library {
                 // mapping than to crash on startup. The next successful run will overwrite it.
                 return false;
             }
+#pragma warning restore 0162
         }
 
         private static bool TryParseEntry(XmlNode node, out byte reg, out EcDiffScanner.Mode mode) {
@@ -499,11 +517,24 @@ namespace OmenMon.Library {
                 GpuReg = 0x14, GpuMode = EcDiffScanner.Mode.DirectMultiplier8, GpuMul = 0,
             },
 
-            // HP OMEN 16 -xf0033dx (8BCA, 2023+) — issue #114, reported by @tapsyin.
-            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            // HP OMEN 16-xf series (8BCA) — HP recycles this ProductId across CPU/
+            // regional variants with conflicting EC layouts (upstream #76/#85 deferred
+            // for exactly this). The canonical 0xB0/0xB2 LE16 tachometers (#114,
+            // @tapsyin) do NOT exist on the 16-xf0079ng / AMD Ryzen 9 / BIOS F.31
+            // variant: EC[0xB0..0xB1] reads 0x005C (92) and EC[0xB2..0xB3] 0x0000
+            // regardless of fan load — not a tachometer. On that firmware HP's legacy
+            // ACPI thermal-profile WMI methods (GTPS/RDCF/WHCM/WMAA) are absent
+            // (LKML "hp-wmi: Fan control broken on HP OMEN 16-xf0xxx, board 8BCA,
+            // BIOS F.31"), but the HPWMI_GM fan calls (0x1A/0x2D/0x2E/0x27) all work:
+            // GetFanLevel returns CPU 40 / GPU 43 under load and 17 / 20 at idle,
+            // i.e. units of 100 RPM (~4000/4300 loaded, ~1700/2000 idle) — verified by
+            // microphone A/B and confirmed against the firmware fan-curve table
+            // (GetFanTable: 2000..6300 RPM). Use BiosLevelMirror ×100, same as 8C9C:
+            // it is EC-layout-independent so it also reads correctly on @tapsyin's
+            // variant, and it matches what OMEN Gaming Hub displays.
             ["8BCA"] = new Mapping {
-                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
-                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+                CpuReg = 0, CpuMode = EcDiffScanner.Mode.BiosLevelMirror, CpuMul = 100,
+                GpuReg = 0, GpuMode = EcDiffScanner.Mode.BiosLevelMirror, GpuMul = 100,
             },
 
             // HP OMEN / Victus (8DD2, 2025/2026) — issue #117, #126, reported by @bobshmo / @Matt0084.

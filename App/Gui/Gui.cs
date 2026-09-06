@@ -211,33 +211,22 @@ namespace OmenMon.AppGui {
 #endregion
 
 #region Visual
-        // Shows a dialog window with error information
+        // Shows a dialog window with error information.
+        // Always the copyable dialog: the About-style pop-up and the MessageBox this
+        // replaces both rendered the text as a label, so reporting an error meant
+        // retyping it. GuiFormError shows the same text selectable, with a Copy button.
         public static void ShowError(string message, Exception e = null) {
-            if(e == null)
 
-                // Use a variation of the about form for a nicer error dialog
-                // unless exception details are available
-                GuiOp.About(
-                    Config.Locale.Get(Config.L_GUI_ABOUT + "TitleError"),
-                    Config.Locale.Get(Config.L_GUI_ABOUT + "TextErrorPrefix")
-                        + message.Replace("\\", "\\\\")
-                        + Config.Locale.Get(Config.L_GUI_ABOUT + "TextErrorSuffix"));
+            string title;
+            try {
+                title = Config.Locale.Get(Config.L_GUI_ABOUT + "TitleError");
+            } catch {
+                title = "Error";
+            }
+            if(string.IsNullOrEmpty(title))
+                title = "Error";
 
-            else
-
-                // Alternatively, pop up a standard message box
-                MessageBox.Show(
-
-                    // To report all the exception details
-                    message + Environment.NewLine 
-                        + Environment.NewLine + e.Source + ": " + e.TargetSite 
-                        + Environment.NewLine + Environment.NewLine + e.StackTrace,
-
-                    Config.AppName,
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button1,
-                    (MessageBoxOptions) MB_SYSTEMMODAL);
+            GuiFormError.Show(title, message, e);
 
         }
 

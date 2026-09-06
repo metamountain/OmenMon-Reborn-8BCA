@@ -3,10 +3,66 @@
      //  https://omenmon.github.io/
 
 using System;
+using System.IO;
+using System.Text;
 using Microsoft.Management.Infrastructure;
 using OmenMon.Library;
 
 namespace OmenMon.Hardware.Bios {
+
+    // Opt-in BIOS/WMI call tracer. Enabled by setting the environment variable
+    // OMENMON_BIOSTRACE to any non-empty value; writes one line per Bios.Send()
+    // call (command, commandType, inData, return code, outData) to
+    // OmenMon-biostrace.log next to the executable (or %TEMP% as a fallback).
+    // Added to diagnose boards where fan WMI calls silently no-op (8BCA / 16-xf0xxx).
+    internal static class BiosTrace {
+        private static readonly bool enabled =
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OMENMON_BIOSTRACE"));
+        private static readonly object gate = new object();
+        private static string path;
+
+        public static bool Enabled { get { return enabled; } }
+
+        private static string Path() {
+            if(path != null) return path;
+            try {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string p = System.IO.Path.Combine(dir, "OmenMon-biostrace.log");
+                File.AppendAllText(p, ""); // probe writability
+                path = p;
+            } catch {
+                path = System.IO.Path.Combine(
+                    Environment.GetEnvironmentVariable("TEMP") ?? ".", "OmenMon-biostrace.log");
+            }
+            return path;
+        }
+
+        private static string Hex(byte[] b) {
+            if(b == null) return "(null)";
+            if(b.Length == 0) return "(empty)";
+            var sb = new StringBuilder(b.Length * 3);
+            int n = b.Length > 32 ? 32 : b.Length;
+            for(int i = 0; i < n; i++) sb.Append(b[i].ToString("X2")).Append(' ');
+            if(b.Length > n) sb.Append("... (").Append(b.Length).Append(" bytes)");
+            return sb.ToString().TrimEnd();
+        }
+
+        public static void Log(uint command, uint commandType, byte[] inData,
+                               byte outDataSize, int returnCode, byte[] outData) {
+            if(!enabled) return;
+            try {
+                lock(gate) {
+                    File.AppendAllText(Path(), string.Format(
+                        "{0:yyyy-MM-dd HH:mm:ss.fff}  cmd=0x{1:X}  type=0x{2:X2}  in=[{3}]  outSize={4}  rc={5}  out=[{6}]{7}",
+                        DateTime.Now, command, commandType, Hex(inData), outDataSize,
+                        returnCode, Hex(outData),
+                        (returnCode == 1 || returnCode == 4 || returnCode == 6 || returnCode == 46)
+                            ? "   <-- SWALLOWED by Check()" : "")
+                        + Environment.NewLine);
+                }
+            } catch { }
+        }
+    }
 
 #region Interface
     // Defines an interface for interacting with the BIOS
@@ -158,16 +214,22 @@ namespace OmenMon.Hardware.Bios {
                             outData = resultData.CimInstanceProperties["Data"].Value as byte[];
 
                         // Return the status code
-                        return Convert.ToInt32(resultData.CimInstanceProperties[BIOS_RETURN_CODE_FIELD].Value);
+                        int rc = Convert.ToInt32(resultData.CimInstanceProperties[BIOS_RETURN_CODE_FIELD].Value);
+                        if(BiosTrace.Enabled)
+                            BiosTrace.Log((uint) command, commandType, inData, outDataSize, rc, outData);
+                        return rc;
 
                     }
 
                 }
 
-            } catch {
+            } catch(Exception e) {
 
                 // Return negative status code
                 // for client-side exceptions
+                if(BiosTrace.Enabled)
+                    BiosTrace.Log((uint) command, commandType, inData, outDataSize, -1,
+                        Encoding.ASCII.GetBytes("EXC: " + e.Message));
                 return -1;
             }
 

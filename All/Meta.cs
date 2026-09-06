@@ -8,13 +8,16 @@ using System.Resources;
 using System.Runtime.InteropServices;
 
 // Project metadata (except version information)
-[assembly: AssemblyCompany("OmenMon")]
+// Note: the *assembly name* stays "OmenMon" — Config derives the settings-XML root
+// element (<OmenMon>), the scheduled-task names and the mutex names from it, so
+// renaming that would break the configuration. Only the display identity changes.
+[assembly: AssemblyCompany("OmenMon Reborn")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCopyright("© 2023-2024 Piotr Szczepański")]
+[assembly: AssemblyCopyright("© 2023-2024 Piotr Szczepański · fork © 2026 seakyy")]
 [assembly: AssemblyCulture("")]
-[assembly: AssemblyDescription("Omen Hardware Monitor")]
-[assembly: AssemblyTitle("Omen Monitoring & Control")]
-[assembly: AssemblyProduct("OmenMon")]
+[assembly: AssemblyDescription("HP OMEN hardware monitoring & control")]
+[assembly: AssemblyTitle("OmenMon Reborn")]
+[assembly: AssemblyProduct("OmenMon Reborn")]
 [assembly: AssemblyTrademark("")]
 [assembly: CLSCompliant(false)]
 [assembly: ComVisible(false)]
