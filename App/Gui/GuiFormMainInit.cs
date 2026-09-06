@@ -185,7 +185,7 @@ namespace OmenMon.AppGui {
             const int GX = 16;                 // form left margin
             const int HDR = 26;                // gap from section top to first control
             const int GAP = 8;                 // gap between stacked sections
-            const int PAD = 16;                // inner padding, every section, both sides
+            const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
 
             // The whole window has to fit within MAX_WINDOW_H, title bar included -- six
@@ -521,7 +521,7 @@ namespace OmenMon.AppGui {
             this.GrpKbd.Controls.Add(this.TxtKbdColorVal);
             this.GrpKbd.Size = new Size(W, H_KBD);
             this.GrpKbd.TabStop = false;
-            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&&", " ").Replace("&", "");
+            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "\u0026");
 #endregion
 
 #region Section: System
@@ -579,7 +579,7 @@ namespace OmenMon.AppGui {
             this.GrpSys.Controls.Add(this.RtfSysInfo);
             this.GrpSys.Size = new Size(W, H_SYS);
             this.GrpSys.TabStop = false;
-            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&&", " ").Replace("&", "");
+            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "\u0026");
 #endregion
 
             // Stack the sections with a consistent gap

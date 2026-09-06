@@ -42,6 +42,12 @@ namespace OmenMon.AppGui {
         public const float FontSmall = 7.5F;  // pt  - graph axis ticks and legends
         public const float FontMono  = 8.25F; // pt  - the system information strip
 
+        // Inner padding for section content, and for the caption and rule that head it.
+        // Shared with the layout code: the caption and its hairline used to be drawn at
+        // x = 0 while every control inside sat at 16, so left edges alternated between
+        // the two all the way down the window and each rule overhung its own content.
+        public const int Pad = 16;
+
         // Entry point: theme a whole form, non-client area included.
         public static void Apply(Form form) {
             if(form == null) return;
@@ -169,15 +175,18 @@ namespace OmenMon.AppGui {
                 ApplyTo(child);
         }
 
-        // GroupBox: hairline under the (already-positioned) caption text instead of the frame.
+        // GroupBox: a caption and a hairline under it, instead of a frame. Both are
+        // inset by Pad so they share the left edge with the section's own controls and
+        // stop at the same right edge — a rule that runs the full width past content
+        // that does not is what made the window look like it stepped in and out.
         private static void PaintGroupBox(object sender, PaintEventArgs e) {
             var g = (GroupBox) sender;
             e.Graphics.Clear(g.BackColor);
             using(var br = new SolidBrush(Muted))
-                e.Graphics.DrawString(g.Text, g.Font, br, 0, 0);
+                e.Graphics.DrawString(g.Text, g.Font, br, Pad, 0);
             int y = g.Font.Height + 2;
             using(var pen = new Pen(Border))
-                e.Graphics.DrawLine(pen, 0, y, g.Width, y);
+                e.Graphics.DrawLine(pen, Pad, y, g.Width - Pad, y);
         }
 
         // Dark drop-down list items.

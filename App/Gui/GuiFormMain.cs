@@ -1083,10 +1083,20 @@ namespace OmenMon.AppGui {
             if(s == null)
                 return;
 
-            // Update the fan speed [rpm]
+            // Update the fan speed [rpm].
+            //
+            // A zero is shown as "auto", not as a number. On this board the rpm figure is
+            // BiosLevelMirror x100 — the level OmenMon last commanded, read back — so it
+            // reads 0 whenever nothing is being commanded: at startup, and whenever the
+            // BIOS countdown lapses and the firmware takes fan control back. The fans are
+            // spinning perfectly well in that state; we simply do not know how fast.
+            // Printing "0 rpm" for "no reading" claims the fans have stopped, which is
+            // both false and alarming.
             try {
-                this.LblFan0Val.Text = s.FanSpeed[0].ToString(Config.FormatFanSpeed);
-                this.LblFan1Val.Text = s.FanSpeed[1].ToString(Config.FormatFanSpeed);
+                this.LblFan0Val.Text = s.FanSpeed[0] > 0
+                    ? s.FanSpeed[0].ToString(Config.FormatFanSpeed) : "auto";
+                this.LblFan1Val.Text = s.FanSpeed[1] > 0
+                    ? s.FanSpeed[1].ToString(Config.FormatFanSpeed) : "auto";
             } catch { }
 
             // Update the fan level [krpm]
