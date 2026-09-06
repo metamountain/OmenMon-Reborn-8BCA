@@ -60,17 +60,103 @@ namespace OmenMon.AppGui {
                 pts.Add(new int[] { TMax, LMax, LMax });
             }
             Sort();
+            Simplify();
             Invalidate();
         }
 
+        // How far, in fan levels, a point may sit off the line between its neighbours and
+        // still be dropped. One level is 100 rpm — below what anyone can hear or wants a
+        // handle for.
+        private const int SimplifyTolerance = 1;
+
+        // Drops points that lie on the straight line between their neighbours, so a curve
+        // comes back as the handful of handles that define its shape.
+        //
+        // The counterpart to the fill-in in SaveProgram(): what is stored is dense, because
+        // the engine only does step functions, but dense points are not what anyone wants
+        // to edit — a saved curve would otherwise reload with twenty-odd handles on top of
+        // each other. Save writes the curve the hardware needs, load recovers the curve the
+        // user drew, and neither has to compromise for the other.
+        private void Simplify() {
+
+            if(pts.Count < 3)
+                return;
+
+            var keep = new List<int[]>();
+            keep.Add(pts[0]);
+
+            for(int i = 1; i < pts.Count - 1; i++) {
+
+                int[] prev = keep[keep.Count - 1], cur = pts[i], next = pts[i + 1];
+                int span = next[0] - prev[0];
+                if(span <= 0) { keep.Add(cur); continue; }
+
+                // Where the point would fall if it sat on the line between its neighbours
+                double f = (double)(cur[0] - prev[0]) / span;
+                double cpu = prev[1] + f * (next[1] - prev[1]);
+                double gpu = prev[2] + f * (next[2] - prev[2]);
+
+                if(Math.Abs(cur[1] - cpu) > SimplifyTolerance
+                    || Math.Abs(cur[2] - gpu) > SimplifyTolerance)
+                    keep.Add(cur);
+
+            }
+
+            keep.Add(pts[pts.Count - 1]);
+            pts = keep;
+
+        }
+
+        // Spacing, in °C, of the points written out between the handles the user placed.
+        // Fan levels are in units of 100 rpm, so 4 °C keeps each step small enough to be
+        // inaudible on a curve of any realistic steepness.
+        private const int SaveStepC = 4;
+
         // Writes the edited points back into the program (caller persists Config.Save()).
+        //
+        // The saved curve is filled in between the handles, because the engine applies a
+        // program as a step function: GetTemperatureLevel() takes the highest threshold at
+        // or below the current temperature, and never interpolates. Handles alone are
+        // therefore not the curve the hardware runs — a Silent profile with points at 0,
+        // 52 and 92 °C meant 1800 rpm everywhere from 52 to 91 °C, forty degrees with no
+        // response at all, while this editor drew a confident diagonal across it.
+        //
+        // Filling in on save keeps both halves honest without compromising either. The
+        // editor stays what it should be, a few handles and a straight line that is easy
+        // to reason about, and the steps the hardware actually executes become small
+        // enough to disappear into it.
         public bool SaveProgram() {
             if(ProgramName == null || !Config.FanProgram.ContainsKey(ProgramName)) return false;
             Sort();
+
             var lvl = new SortedDictionary<byte, byte[]>();
-            foreach(var p in pts)
-                lvl[(byte)Clamp(p[0], 0, 255)] =
-                    new byte[] { (byte)Clamp(p[1], 0, 255), (byte)Clamp(p[2], 0, 255) };
+
+            for(int i = 0; i < pts.Count; i++) {
+
+                // Always emit the handle itself, so a point the user placed lands exactly
+                lvl[(byte)Clamp(pts[i][0], 0, 255)] =
+                    new byte[] { (byte)Clamp(pts[i][1], 0, 255), (byte)Clamp(pts[i][2], 0, 255) };
+
+                if(i + 1 >= pts.Count)
+                    continue;
+
+                int t0 = pts[i][0], t1 = pts[i + 1][0];
+                int span = t1 - t0;
+                if(span <= SaveStepC)
+                    continue;
+
+                // Interpolate the intermediate thresholds along the straight line the
+                // editor draws between the two handles
+                for(int t = t0 + SaveStepC; t < t1; t += SaveStepC) {
+                    double f = (double)(t - t0) / span;
+                    int cpu = (int)Math.Round(pts[i][1] + f * (pts[i + 1][1] - pts[i][1]));
+                    int gpu = (int)Math.Round(pts[i][2] + f * (pts[i + 1][2] - pts[i][2]));
+                    lvl[(byte)Clamp(t, 0, 255)] =
+                        new byte[] { (byte)Clamp(cpu, 0, 255), (byte)Clamp(gpu, 0, 255) };
+                }
+
+            }
+
             Config.FanProgram[ProgramName].Level = lvl;
             return true;
         }
