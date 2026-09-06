@@ -96,30 +96,21 @@ namespace OmenMon.AppGui {
                 // Note: ClearTypeGridFit yields suboptimal results,
                 // it's a tie between AntiAliasGridFit or SingleBitPerPixelGridFit
 
-                // Render the background, if requested: a solid white OMEN diamond with a
-                // thin black edge. This used to be a cool-or-warm gradient keyed on
-                // temperature, which was the last colour anywhere in the tray.
+                // Render the background, if requested: a plain white OMEN diamond, no
+                // outline. This used to be a cool-or-warm gradient keyed on temperature,
+                // which was the last colour anywhere in the tray.
                 //
                 // White ground rather than black: the tray sits on the taskbar, which is
                 // dark by default, and a dark icon there reads as a smudge. The digits go
-                // black on top (see Update()). The edge covers the opposite case — on a
-                // light taskbar a white diamond would have no outline at all.
-                if(this.IsDynamicBackground) {
-
-                    Point[] diamond = new Point[] {
+                // black on top (see Update()).
+                if(this.IsDynamicBackground)
+                    Canvas.FillPolygon(Brushes.White, new Point[] {
                         new Point(Size.Width / 2, 0),
                         new Point(Size.Width, Size.Height / 2),
                         new Point(Size.Width / 2, Size.Height),
                         new Point(0, Size.Height / 2),
                         new Point(Size.Width / 2, 0)
-                    };
-
-                    Canvas.FillPolygon(Brushes.White, diamond);
-
-                    using(Pen edge = new Pen(Color.Black, Math.Max(1f, Size.Width / 20f)))
-                        Canvas.DrawPolygon(edge, diamond);
-
-                }
+                    });
 
                 // Otherwise still have to draw something, or the background
                 // will remain all black until the next update (GDI bug?)
