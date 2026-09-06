@@ -179,7 +179,7 @@ chase every transient.
 | **Telemetry** | `OmenMon-telemetry.csv`, written on a heartbeat so logging continues with the window closed (`Library/TelemetryLog.cs`) |
 | **Errors** | Selectable, copyable error dialog carrying board, BIOS, OS and the full exception chain; everything shown to the user is also appended to `OmenMon-error.log` (`App/Gui/GuiFormError.cs`) |
 | **Config saving** | Written to a temporary file and swapped in, so a failed save cannot leave a half-written `OmenMon.xml` |
-| **Icons** | Monochrome: black OMEN diamond, white mark, white temperature digits |
+| **Icons** | Monochrome: white OMEN diamond, black mark, black temperature digits, thin black edge |
 | **Calibration** | Auto-calibration and its sidecar removed — on this board it produced confidently wrong mappings |
 
 The assembly name stays `OmenMon`. `Config.AppName` derives the settings-XML root

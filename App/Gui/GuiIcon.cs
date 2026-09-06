@@ -96,11 +96,14 @@ namespace OmenMon.AppGui {
                 // Note: ClearTypeGridFit yields suboptimal results,
                 // it's a tie between AntiAliasGridFit or SingleBitPerPixelGridFit
 
-                // Render the background, if requested: a solid black OMEN diamond with a
-                // thin white edge. This used to be a cool-or-warm gradient keyed on
-                // temperature, which was the last colour left anywhere in the tray. The
-                // edge earns its place — a pure black fill vanishes on the default dark
-                // taskbar and would leave the digits floating with no icon around them.
+                // Render the background, if requested: a solid white OMEN diamond with a
+                // thin black edge. This used to be a cool-or-warm gradient keyed on
+                // temperature, which was the last colour anywhere in the tray.
+                //
+                // White ground rather than black: the tray sits on the taskbar, which is
+                // dark by default, and a dark icon there reads as a smudge. The digits go
+                // black on top (see Update()). The edge covers the opposite case — on a
+                // light taskbar a white diamond would have no outline at all.
                 if(this.IsDynamicBackground) {
 
                     Point[] diamond = new Point[] {
@@ -111,10 +114,9 @@ namespace OmenMon.AppGui {
                         new Point(Size.Width / 2, 0)
                     };
 
-                    Canvas.FillPolygon(Brushes.Black, diamond);
+                    Canvas.FillPolygon(Brushes.White, diamond);
 
-                    // Inset by half the pen width so the stroke stays inside the icon box
-                    using(Pen edge = new Pen(Color.White, Math.Max(1f, Size.Width / 20f)))
+                    using(Pen edge = new Pen(Color.Black, Math.Max(1f, Size.Width / 20f)))
                         Canvas.DrawPolygon(edge, diamond);
 
                 }
@@ -263,7 +265,12 @@ namespace OmenMon.AppGui {
                 // as opposed to using DrawString() directly
                 using GraphicsPath CanvasPath = new GraphicsPath();
                 CanvasPath.AddString(message, TextFont.FontFamily, (int) FontStyle.Regular, (Canvas.DpiY * TextFont.SizeInPoints / 72), Box, TextFormat);
-                Canvas.FillPath(Brushes.White, CanvasPath);
+
+                // Black on the white diamond drawn in Configure(). With no background at
+                // all there is nothing to sit on, so the digits keep the taskbar's own
+                // contrast and stay white.
+                Canvas.FillPath(
+                    this.IsDynamicBackground ? Brushes.Black : Brushes.White, CanvasPath);
 
                 // Update the icon now that it is ready
                 User32.DestroyIcon(this.LastHandle);
