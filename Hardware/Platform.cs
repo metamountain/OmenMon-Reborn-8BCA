@@ -207,6 +207,42 @@ namespace OmenMon.Hardware.Platform {
 #endregion
 
 #region Information Retrieval
+        // Rolling window over the AMD die temperature, for the median below
+        private readonly int[] dieHistory = new int[3];
+        private int dieCount;
+
+        // The CPU's own Tctl/Tdie over the SMN, median-of-3 smoothed.
+        //
+        // Smoothed because Zen boosts on any brief foreground task, so the raw reading
+        // spikes ~30 °C for a single sample at idle; the EC value it replaces was
+        // smoothed in firmware, and feeding the unsmoothed die to the fan programs would
+        // have them chase transients. Three samples drops a lone spike while still
+        // reacting within a few seconds of real load.
+        //
+        // The GPU deliberately gets no equivalent smoothing — see GetGpuTemperature().
+        private bool TryGetCpuDieTemperature(out byte celsius) {
+
+            celsius = 0;
+            double die;
+            if(!OmenMon.Driver.PawnIoAmd.TryGetCpuTemperature(out die)
+                || die <= 0.0 || die >= Config.MaxBelievableTemperature)
+                return false;
+
+            dieHistory[dieCount++ % dieHistory.Length] = (int) Math.Round(die);
+            celsius = (byte) (dieCount >= dieHistory.Length
+                ? Median3(dieHistory[0], dieHistory[1], dieHistory[2])
+                : (int) Math.Round(die));
+            return true;
+
+        }
+
+        // Middle of three values, without sorting
+        private static int Median3(int a, int b, int c) {
+            if(a > b) { int t = a; a = b; b = t; }
+            if(b > c) { int t = b; b = c; c = t; }
+            return a > b ? a : b;
+        }
+
         // Obtains the maximum value from the platform temperature array
         public byte GetMaxTemperature(bool forceUpdate = false) {
 
@@ -230,6 +266,21 @@ namespace OmenMon.Hardware.Platform {
 
                     // Update the candidate
                     this.LastMaxTemperature = value;
+
+            // The loop above only sees the EC and WMI sensors. On this board both of the
+            // ones that matter are wrong — CPUT is firmware string data and GPTM does not
+            // track the GPU — so the die readings have to be folded in by hand, or the
+            // thermal-panic check and the tray icon would run on the same bad numbers the
+            // fan curves used to.
+            byte die;
+            if(TryGetCpuDieTemperature(out die) && die > this.LastMaxTemperature)
+                this.LastMaxTemperature = die;
+
+            int gpuDie;
+            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie)
+                && gpuDie > 0 && gpuDie < Config.MaxBelievableTemperature
+                && gpuDie > this.LastMaxTemperature)
+                this.LastMaxTemperature = (byte) gpuDie;
 
             // Return the result
             return this.LastMaxTemperature;
@@ -262,7 +313,21 @@ namespace OmenMon.Hardware.Platform {
                 else if(name == "BIOS" && val > 0) bios = val;
             }
 
-            this.LastCpuTemperature = bios > cpu ? bios : cpu;
+            // The processor's own sensor wins over both when it is reachable.
+            //
+            // This override lives here, not in the GUI monitor where it started, because
+            // FanProgram.Update() calls straight into GetCpuTemperature() — it never sees
+            // a GUI snapshot. Putting it in the monitor meant the corrected temperature
+            // reached the display and the telemetry CSV while the fan curves, the
+            // thermal-panic check and the tray icon all still ran on the EC sensors that
+            // were measured to be wrong. Every consumer goes through this accessor, so
+            // this is the only place the fix is actually true everywhere.
+            byte die;
+            if(TryGetCpuDieTemperature(out die))
+                this.LastCpuTemperature = die;
+            else
+                this.LastCpuTemperature = bios > cpu ? bios : cpu;
+
             return this.LastCpuTemperature;
 
         }
@@ -304,6 +369,18 @@ namespace OmenMon.Hardware.Platform {
             // zero readings then mean "GPU is powered off", not "no sensor".
             if(gpu > 0)
                 this.gpuTempObserved = true;
+
+            // The GPU's own die sensor wins when it is reachable. GPTM was measured
+            // against it under a 79 W load and does not track it: the die went
+            // 34 -> 76 °C while GPTM moved 26 -> 33 °C, the gap widening with heat.
+            // Same reasoning as the CPU override about why this belongs here and not
+            // in the GUI monitor — the fan curves read this accessor, not a snapshot.
+            int gpuDie;
+            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie)
+                && gpuDie > 0 && gpuDie < Config.MaxBelievableTemperature) {
+                gpu = (byte) gpuDie;
+                this.gpuTempObserved = true;
+            }
 
             this.LastGpuTemperature = gpu;
             return this.LastGpuTemperature;

@@ -143,6 +143,39 @@ that support them are still online and still persuasive.
 | CPU temperature was fixed by disabling `CPUT` | 6 idle samples reading 44-45 against a die of 41 | Burn-in disproved it: 44 °C reported while the die was at 66.8, and 33 while the die was at 48.5. **Idle agreement is not agreement.** |
 | `GPTM` (EC `0xB7`) is a valid GPU sensor | It moved a little, the idle value looked right, and the fan curves appeared to work | A 79 W GPU load: die 34 → 76 °C, `GPTM` 26 → 33 °C, gap widening from 25 to 42 °C. Same trap as the row above, found only because the user asked whether the GPU had ever been checked. It had not. |
 
+### The fan curves read Platform, not the GUI snapshot
+
+`FanProgram.Update()` calls `Platform.GetCpuTemperature()` and
+`GetGpuTemperature()` directly. Both sensor overrides were first written into
+`GuiMonitor.Sample()`, which meant the corrected temperatures reached the window and
+`OmenMon-telemetry.csv` while the fan curves, `CheckThermalPanic` and the tray icon all
+still ran on the EC sensors that had been measured to be wrong. The symptom was a
+telemetry row reading `max 76` with `cpu_lvl 17` - fans at the floor while the log said
+76 C.
+
+Both overrides now live in the `Platform` accessors, and are folded into
+`GetMaxTemperature()`. `GuiMonitor` reads the same accessors, so display and fans cannot
+diverge again. **Any new sensor source belongs in `Platform`, not in the monitor.**
+
+### NVML goes stale when the dGPU powers down
+
+Hybrid graphics: when nothing needs the discrete GPU, rendering moves to the AMD
+integrated one and the dGPU powers off. NVML then keeps returning the last temperature
+it recorded before that - with `NVML_SUCCESS`, indefinitely. Seen as a frozen 76 C (the
+peak of a load test that had ended minutes earlier) while the die was at 38 C. Running
+`nvidia-smi` wakes the GPU and yields one correct reading before it freezes again, which
+is what made this hard to pin down - every attempt to measure it destroyed the state
+being measured.
+
+`Nvml.TryGetGpuTemperature()` rejects a value repeated 120 times running, *unless* it is
+at or above 60 C. That exception is the point: a GPU genuinely pinned at a constant
+temperature under sustained load must never have its reading discarded, because that
+would drop the fans exactly when they are needed. Below 60 C a stale value can only be
+the last one before sleep, so discarding it costs nothing. The guard can only reject,
+never invent, and rejection falls back to prior behaviour.
+
+Not yet verified under a GPU-only load. That is the next test.
+
 ## Still open
 
 - **Monitor thread starves under sustained full load** — 2 telemetry samples in 15

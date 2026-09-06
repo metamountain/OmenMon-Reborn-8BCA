@@ -290,60 +290,21 @@ namespace OmenMon.AppGui {
                 else if(name == "GPTM" && val > 0) gpu = val;
                 else if(name == "BIOS" && val > 0) bios = val;
             }
-            // CPU temperature is the higher of EC CPUT and the WMI BIOS sensor — same
-            // policy as Platform.GetCpuTemperature(). Covers both failure shapes: CPUT
-            // reading 0xFF→0 (8C9C, 8BBE, …) and CPUT stuck on a constant non-zero
-            // byte of firmware string data (8D87 reads a permanent 52 — issue #97).
-            if(bios > cpu) cpu = bios;
-
-            // Prefer the CPU's own sensor when it is reachable. Tctl/Tdie comes straight
-            // from the die over the SMN, so it is immune to the firmware-string problem
-            // that makes every EC and WMI CPU-temperature source on this board useless —
-            // and it tracks load in real time instead of lagging the EC's smoothing.
-            // Falls back to the EC/BIOS value wherever the module is unavailable.
+            // The per-sensor values above are for the individual sensor readout only.
+            // The three headline temperatures come from the platform accessors, which is
+            // where the die/NVML overrides now live.
             //
-            // Median-of-3 before it is used, because that immediacy cuts both ways: Zen
-            // boosts hard on any brief foreground task, so the raw reading spikes 30 °C
-            // for a single sample at idle. The EC value was smoothed in firmware; feeding
-            // the unsmoothed die straight into MaxTemp would have the fan programs chase
-            // every transient. Three samples is enough to drop a lone spike while still
-            // reacting within a few seconds of a real load.
-            double die;
-            if(OmenMon.Driver.PawnIoAmd.TryGetCpuTemperature(out die) && die > 0.0 && die < 125.0) {
-                dieHistory[dieCount++ % dieHistory.Length] = (int) Math.Round(die);
-                cpu = dieCount >= dieHistory.Length
-                    ? Median3(dieHistory[0], dieHistory[1], dieHistory[2])
-                    : (int) Math.Round(die);
-            }
-
-            // Same treatment for the GPU, and for a more urgent reason. The EC sensor
-            // GPTM (0xB7) does not follow this GPU: measured under a sustained 79 W load,
-            // the die went 34 → 76 °C while GPTM moved 26 → 33 °C, the gap widening from
-            // 25 to 42 °C as it heated. Not a fixed offset — it barely responds.
-            //
-            // That matters more than the CPU case did. Fan programs key on
-            // max(CPU, GPU), so a GPU term that cannot rise contributes nothing: during
-            // that test the fans sat at the 1700 rpm Silent floor with the GPU at 65 °C,
-            // because the only sensor that moved was the CPU at 48 °C, still under the
-            // profile's 52 °C threshold. A GPU-heavy, CPU-light workload — which is to
-            // say a game — is exactly the case this gets wrong.
-            //
-            // Deliberately not median-filtered, unlike the CPU. NVML already reports a
-            // stable die temperature with none of Zen's boost spikes, and any smoothing
-            // here would delay a rise — which is the wrong direction to err for the part
-            // that has just been shown to under-report.
-            int gpuDie;
-            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie) && gpuDie > 0 && gpuDie < 125)
-                gpu = gpuDie;
-
-            s.CpuTemp = cpu;
-            s.GpuTemp = gpu;
-            s.MaxTemp = plat.GetMaxTemperature(false); // temps already refreshed above
-
-            // GetMaxTemperature() only sees the EC/BIOS sensors, so a die reading that
-            // outruns them has to be folded in by hand — the fan programs key off this
-            if(s.CpuTemp > s.MaxTemp) s.MaxTemp = s.CpuTemp;
-            if(s.GpuTemp > s.MaxTemp) s.MaxTemp = s.GpuTemp;
+            // They used to be applied here instead, and that was the bug: FanProgram
+            // calls Platform.GetCpuTemperature()/GetGpuTemperature() directly and never
+            // sees this snapshot, so the corrected temperatures reached the window and
+            // the telemetry CSV while the fan curves, the thermal-panic check and the
+            // tray icon all still ran on the EC sensors that were measured to be wrong.
+            // Reading the same accessors here keeps the display honest about what the
+            // fans are actually acting on — if the two ever disagree again, the display
+            // is no longer the place it would show up.
+            s.CpuTemp = plat.GetCpuTemperature(false); // sensors already refreshed above
+            s.GpuTemp = plat.GetGpuTemperature(false);
+            s.MaxTemp = plat.GetMaxTemperature(false);
 
             // The dynamic-icon warm/cool background needs the fan mode even with the form
             // hidden, so it is always sampled.
@@ -447,16 +408,6 @@ namespace OmenMon.AppGui {
         private const int TelemetryEvery = 30;
         private int TelemetryTick;
 
-        // Rolling window over the AMD die temperature, for the median-of-3 in Sample()
-        private readonly int[] dieHistory = new int[3];
-        private int dieCount;
-
-        // Middle of three values, without sorting
-        private static int Median3(int a, int b, int c) {
-            if(a > b) { int t = a; a = b; b = t; }
-            if(b > c) { int t = b; b = c; c = t; }
-            return a > b ? a : b;
-        }
 
         private static int LogSane(int v, int lo, int hi, ref int last) {
             if(v >= lo && v <= hi) { last = v; return v; }

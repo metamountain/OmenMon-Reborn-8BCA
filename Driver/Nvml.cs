@@ -134,6 +134,11 @@ namespace OmenMon.Driver {
                 status = "NVML ready" + (deviceName.Length > 0 ? " (" + deviceName + ")" : "");
             }
 
+            // Record the outcome either way. Whether the GPU temperature is coming from
+            // the die or from the EC sensor that was measured to be wrong is exactly the
+            // thing worth knowing after a deploy, and it is invisible from the window.
+            OmenMon.Library.Config.ErrorLog("Nvml.Open", null, status);
+
         }
 
         public static void Close() {
@@ -144,9 +149,39 @@ namespace OmenMon.Driver {
             }
         }
 
+        // Consecutive reads that returned the identical value, for the staleness check
+        private static int lastValue = -1;
+        private static int repeatCount;
+
+        // A reading repeated this many times running is treated as stale. At roughly one
+        // sample a second that is about two minutes of a temperature that has not moved
+        // by even a degree — which a live sensor, even an idle one, does not do.
+        private const int StaleRepeatLimit = 120;
+
+        // Never suspect a reading at or above this. See TryGetGpuTemperature().
+        private const int StaleAlwaysTrustC = 60;
+
         // Current GPU die temperature in whole degrees Celsius.
         // Opens on first use; Open() returns immediately once tried, so the probe it
-        // runs cannot recurse back into here
+        // runs cannot recurse back into here.
+        //
+        // Guards against a stale value. This laptop is hybrid-graphics: when nothing needs
+        // the discrete GPU, rendering moves to the AMD integrated one and the dGPU powers
+        // down — and NVML then keeps returning the last temperature it recorded before
+        // that, with NVML_SUCCESS, indefinitely. Observed in the field as a frozen 76 °C,
+        // the peak from a load test that had finished minutes earlier, while the real die
+        // sat at 38 °C. Running nvidia-smi woke the GPU and produced one correct reading
+        // before it froze again, which is what made this so confusing to pin down.
+        //
+        // The guard can only ever reject a reading, never invent one, and rejection falls
+        // back to the previous behaviour — so it cannot make anything worse than it was.
+        //
+        // The one case that would be dangerous is a GPU genuinely pinned at a constant
+        // temperature under sustained load, where discarding the reading would drop the
+        // fans exactly when they are needed. Hence StaleAlwaysTrustC: anything at or above
+        // 60 °C is trusted unconditionally, however long it has been steady. A stale value
+        // is only ever the last one seen before the GPU went to sleep, and below 60 °C
+        // discarding it costs nothing.
         public static bool TryGetGpuTemperature(out int celsius) {
             celsius = 0;
             if(!tried)
@@ -157,11 +192,29 @@ namespace OmenMon.Driver {
                 uint temp;
                 if(nvmlDeviceGetTemperature(device, SensorGpu, out temp) != Success)
                     return false;
-                celsius = (int) temp;
+
+                int value = (int) temp;
+                if(value == lastValue) {
+                    if(repeatCount < int.MaxValue)
+                        repeatCount++;
+                } else {
+                    lastValue = value;
+                    repeatCount = 0;
+                }
+
+                if(value < StaleAlwaysTrustC && repeatCount >= StaleRepeatLimit)
+                    return false;
+
+                celsius = value;
                 return true;
             } catch {
                 return false;
             }
+        }
+
+        // Whether the last reading looked stale — for diagnostics
+        public static bool IsLikelyStale {
+            get { return lastValue < StaleAlwaysTrustC && repeatCount >= StaleRepeatLimit; }
         }
 
         private static string LocateLibrary() {
