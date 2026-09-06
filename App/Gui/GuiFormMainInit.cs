@@ -96,8 +96,8 @@ namespace OmenMon.AppGui {
 
             this.FigureFont = new Font(
                 GdiFont.Get(0), Config.GuiFigureFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
-            Font heroFont = new Font(GdiFont.Get(0), 33F, FontStyle.Regular, GraphicsUnit.Pixel);
-            Font capFont  = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+            Font heroFont = new Font(GdiFont.Get(0), GuiTheme.FontHero, FontStyle.Regular, GraphicsUnit.Pixel);
+            Font capFont  = new Font("Segoe UI", GuiTheme.FontBody, FontStyle.Regular, GraphicsUnit.Point);
 
 #region Instantiation
             this.BarFan0Rte = new ProgressBarEx();
@@ -185,6 +185,7 @@ namespace OmenMon.AppGui {
             const int GX = 16;                 // form left margin
             const int HDR = 26;                // gap from section top to first control
             const int GAP = 8;                 // gap between stacked sections
+            const int PAD = 16;                // inner padding, every section, both sides
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
 
             // The whole window has to fit within MAX_WINDOW_H, title bar included -- six
@@ -197,10 +198,10 @@ namespace OmenMon.AppGui {
             // instead of the window silently growing past the screen again.
             const int MAX_WINDOW_H = 960;
 
-            const int H_TMP = HDR + 114;   // hero readout: second row at r1 = HDR+64, 46 tall
+            const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
             const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
             const int H_KBD = HDR + 190;   // keyboard, sliders, preset row, hex field
-            const int H_SYS = HDR + 78;    // autostart, exit, three lines of system info
+            const int H_SYS = HDR + 88;    // autostart, exit, three lines of Consolas + margin
 
             // Chrome is the non-client height of a FixedSingle form with a caption
             int chrome = SystemInformation.CaptionHeight
@@ -220,8 +221,8 @@ namespace OmenMon.AppGui {
             int hCurve = graphBudget - hChart;
 
 #region Section: Graph
-            this.Chart.Location = new Point(6, HDR - 8);
-            this.Chart.Size = new Size(W - 12, hChart);
+            this.Chart.Location = new Point(PAD, HDR - 8);
+            this.Chart.Size = new Size(W - 2 * PAD, hChart);
             this.Chart.SampleSeconds = Math.Max(1, Config.UpdateMonitorInterval);
             this.GrpChart.Controls.Add(this.Chart);
             this.GrpChart.Size = new Size(W, HDR + hChart - 4);
@@ -240,39 +241,39 @@ namespace OmenMon.AppGui {
             this.LblHdrTmp.AutoSize = false;
             this.LblHdrTmp.Font = capFont; this.LblHdrTmp.ForeColor = cCap;
             this.LblHdrTmp.Location = new Point(252, HDR);
-            this.LblHdrTmp.Size = new Size(W - 268, 16);
+            this.LblHdrTmp.Size = new Size(W - PAD - 252, 16);
             this.LblHdrTmp.TextAlign = ContentAlignment.MiddleRight;
             this.LblHdrTmp.Text = "°C";
 
-            int r0 = HDR + 18, r1 = r0 + 46;
+            int r0 = HDR + 18, r1 = r0 + 40;
             this.LblFan0Cap.Font = capFont; this.LblFan0Cap.ForeColor = cCap;
-            this.LblFan0Cap.Location = new Point(18, r0 + 12);
+            this.LblFan0Cap.Location = new Point(PAD, r0 + 12);
             this.LblFan0Cap.Size = new Size(60, 30);
             this.LblFan0Cap.Text = "CPU";
 
             this.LblFan0Val.Font = heroFont; this.LblFan0Val.ForeColor = cVal;
             this.LblFan0Val.Location = new Point(78, r0);
-            this.LblFan0Val.Size = new Size(168, 46);
+            this.LblFan0Val.Size = new Size(168, 40);
             this.LblFan0Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblTmp0Val.Font = heroFont; this.LblTmp0Val.ForeColor = cVal;
             this.LblTmp0Val.Location = new Point(252, r0);
-            this.LblTmp0Val.Size = new Size(W - 268, 46);
+            this.LblTmp0Val.Size = new Size(W - PAD - 252, 40);
             this.LblTmp0Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblFan1Cap.Font = capFont; this.LblFan1Cap.ForeColor = cCap;
-            this.LblFan1Cap.Location = new Point(18, r1 + 12);
+            this.LblFan1Cap.Location = new Point(PAD, r1 + 12);
             this.LblFan1Cap.Size = new Size(60, 30);
             this.LblFan1Cap.Text = "GPU";
 
             this.LblFan1Val.Font = heroFont; this.LblFan1Val.ForeColor = cVal;
             this.LblFan1Val.Location = new Point(78, r1);
-            this.LblFan1Val.Size = new Size(168, 46);
+            this.LblFan1Val.Size = new Size(168, 40);
             this.LblFan1Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblTmp1Val.Font = heroFont; this.LblTmp1Val.ForeColor = cVal;
             this.LblTmp1Val.Location = new Point(252, r1);
-            this.LblTmp1Val.Size = new Size(W - 268, 46);
+            this.LblTmp1Val.Size = new Size(W - PAD - 252, 40);
             this.LblTmp1Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.PnlTmpHidden.Location = new Point(0, 0);
@@ -302,7 +303,7 @@ namespace OmenMon.AppGui {
 #region Section: Fan  (profiles only, with the curve edited inline)
             int fa = HDR;
 
-            MakeMini("Profile", new Point(16, fa + 3), capFont, this.GrpFan);
+            MakeMini("Profile", new Point(PAD, fa + 3), capFont, this.GrpFan);
             this.CmbFanProg.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbFanProg.Location = new Point(72, fa);
             this.CmbFanProg.Size = new Size(164, 24);
@@ -327,22 +328,22 @@ namespace OmenMon.AppGui {
             this.BtnFanSet.Text = "Apply";
 
             this.LblFanCountdown.Font = capFont; this.LblFanCountdown.ForeColor = cCap;
-            this.LblFanCountdown.Location = new Point(W - 58, fa + 3);
+            this.LblFanCountdown.Location = new Point(W - PAD - 44, fa + 3);
             this.LblFanCountdown.Size = new Size(44, 20);
             this.LblFanCountdown.TextAlign = ContentAlignment.MiddleRight;
 
             // How the curve editor works — stated in the section, not hidden in a tooltip
             Label curveHelp = new Label {
                 AutoSize = false, Font = capFont, ForeColor = GuiTheme.Muted,
-                Location = new Point(16, fa + 30), Size = new Size(W - 32, 18),
+                Location = new Point(PAD, fa + 30), Size = new Size(W - 2 * PAD, 18),
                 BackColor = Color.Transparent,
                 Text = "Left-click the graph to add a point · drag to move it · right-click a point to remove it"
             };
             this.GrpFan.Controls.Add(curveHelp);
 
             // Inline curve editor, drawn like the history graph above
-            this.Curve.Location = new Point(6, fa + 50);
-            this.Curve.Size = new Size(W - 12, hCurve);
+            this.Curve.Location = new Point(PAD, fa + 50);
+            this.Curve.Size = new Size(W - 2 * PAD, hCurve);
 
             // Everything else the fan logic still reads is kept alive but off-screen:
             // the five mode radios (Profile is forced on), the constant-speed sliders,
@@ -368,13 +369,13 @@ namespace OmenMon.AppGui {
             // One selector. Each choice sets the Windows power mode *and* the CPU
             // wattage limits together — the user shouldn't have to know they are two
             // different layers. Selected = solid accent fill, so it is unmistakable.
-            int pw = (W - 32 - 24) / 4;
+            int pw = (W - 2 * PAD - 24) / 4;
             Action<RadioButton, string, int> mkPwr = (rb, t, i) => {
                 rb.Text = t;
                 rb.Appearance = Appearance.Button;
                 rb.FlatStyle = FlatStyle.Flat;
                 rb.TextAlign = ContentAlignment.MiddleCenter;
-                rb.Location = new Point(16 + i * (pw + 8), HDR);
+                rb.Location = new Point(PAD + i * (pw + 8), HDR);
                 rb.Size = new Size(pw, 30);
                 rb.BackColor = GuiTheme.Panel;
                 rb.ForeColor = GuiTheme.Text;
@@ -397,7 +398,7 @@ namespace OmenMon.AppGui {
             this.NumPwrWatt.Maximum = 54;
             this.NumPwrWatt.Value = 45;
             this.NumPwrWatt.Increment = 1;
-            this.NumPwrWatt.Location = new Point(W - 110, HDR + 40);
+            this.NumPwrWatt.Location = new Point(W - PAD - 54, HDR + 40);
             this.NumPwrWatt.Size = new Size(54, 24);
             this.NumPwrWatt.TextAlign = HorizontalAlignment.Center;
             this.NumPwrWatt.BorderStyle = BorderStyle.FixedSingle;
@@ -410,8 +411,8 @@ namespace OmenMon.AppGui {
             this.LblPwrHint.AutoSize = false;
             this.LblPwrHint.Font = capFont;
             this.LblPwrHint.ForeColor = GuiTheme.Muted;
-            this.LblPwrHint.Location = new Point(16, HDR + 36);
-            this.LblPwrHint.Size = new Size(W - 190, 34);
+            this.LblPwrHint.Location = new Point(PAD, HDR + 36);
+            this.LblPwrHint.Size = new Size(W - PAD - 174, 34);
             this.LblPwrHint.Text = "";
 
             this.Tip.SetToolTip(this.RdoPwrEco,
@@ -437,7 +438,7 @@ namespace OmenMon.AppGui {
 #endregion
 
 #region Section: Keyboard
-            this.ChkKbdBacklight.Location = new Point(18, HDR + 2);
+            this.ChkKbdBacklight.Location = new Point(PAD, HDR + 2);
             this.ChkKbdBacklight.AutoCheck = false;
             this.ChkKbdBacklight.Size = new Size(90, 24);
             this.ChkKbdBacklight.Text = "Backlight";
@@ -445,20 +446,20 @@ namespace OmenMon.AppGui {
             // Which zone the R/G/B sliders apply to (index 0 = All = uniform colour)
             this.CmbKbdZone.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbKbdZone.Location = new Point(120, HDR);
-            this.CmbKbdZone.Size = new Size(W - 138, 26);
+            this.CmbKbdZone.Size = new Size(W - PAD - 120, 26);
             this.CmbKbdZone.Items.AddRange(new object[] {
                 "All zones (uniform)", "Left  (F1–F5)", "Middle  (F6–F12)", "Right  (nav / arrows)", "WASD" });
             this.CmbKbdZone.SelectedIndex = 0;
             this.CmbKbdZone.SelectedIndexChanged += EventKbdZoneSelect;
 
-            this.PicKbd.Location = new Point(40, HDR + 32);
-            this.PicKbd.Size = new Size(W - 80, 52);
+            this.PicKbd.Location = new Point(PAD, HDR + 32);
+            this.PicKbd.Size = new Size(W - 2 * PAD, 52);
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
             int ry = HDR + 92;
             this.LblKbdR.Text = "R"; this.LblKbdR.Font = capFont; this.LblKbdR.ForeColor = cCap;
-            this.LblKbdR.Location = new Point(18, ry + 4); this.LblKbdR.Size = new Size(16, 20);
+            this.LblKbdR.Location = new Point(PAD, ry + 4); this.LblKbdR.Size = new Size(16, 20);
             this.LblKbdG.Text = "G"; this.LblKbdG.Font = capFont; this.LblKbdG.ForeColor = cCap;
             this.LblKbdG.Location = new Point(138, ry + 4); this.LblKbdG.Size = new Size(16, 20);
             this.LblKbdB.Text = "B"; this.LblKbdB.Font = capFont; this.LblKbdB.ForeColor = cCap;
@@ -468,13 +469,13 @@ namespace OmenMon.AppGui {
             SetupRgbSlider(this.TrkKbdG, new Point(156, ry));
             SetupRgbSlider(this.TrkKbdB, new Point(276, ry));
 
-            this.PnlKbdSwatch.Location = new Point(W - 30, ry + 3);
+            this.PnlKbdSwatch.Location = new Point(W - PAD - 24, ry + 3);
             this.PnlKbdSwatch.Size = new Size(24, 24);
             this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
 
             int py = ry + 40;
             this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbKbdColorPreset.Location = new Point(18, py);
+            this.CmbKbdColorPreset.Location = new Point(PAD, py);
             this.CmbKbdColorPreset.Size = new Size(132, 26);
 
             this.BtnKbdColorPresetSet.Location = new Point(156, py - 1);
@@ -491,9 +492,9 @@ namespace OmenMon.AppGui {
 
             // Hex value on its own line under the preset row
             this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
-            this.TxtKbdColorVal.Location = new Point(18, py + 32);
+            this.TxtKbdColorVal.Location = new Point(PAD, py + 32);
             this.TxtKbdColorVal.MaxLength = 27;
-            this.TxtKbdColorVal.Size = new Size(W - 36, 24);
+            this.TxtKbdColorVal.Size = new Size(W - 2 * PAD, 24);
             this.TxtKbdColorVal.TextAlign = HorizontalAlignment.Center;
 
             this.GrpKbd.Controls.Add(this.ChkKbdBacklight);
@@ -518,7 +519,7 @@ namespace OmenMon.AppGui {
 
 #region Section: System
             this.ChkAutoStart.AutoCheck = false;
-            this.ChkAutoStart.Location = new Point(14, HDR);
+            this.ChkAutoStart.Location = new Point(PAD, HDR);
             this.ChkAutoStart.Size = new Size(220, 22);
             this.ChkAutoStart.Text = "Start with Windows";
 
@@ -530,7 +531,7 @@ namespace OmenMon.AppGui {
             this.BtnMenu.BackColor = GuiTheme.PanelHi;
             this.BtnMenu.ForeColor = GuiTheme.Text;
             this.BtnMenu.FlatAppearance.BorderColor = GuiTheme.Border;
-            this.BtnMenu.Location = new Point(W - 104, HDR - 3);
+            this.BtnMenu.Location = new Point(W - PAD - 90, HDR - 3);
             this.BtnMenu.Size = new Size(90, 27);
             this.BtnMenu.Click += (s, e) => Application.Exit();
 
@@ -548,10 +549,10 @@ namespace OmenMon.AppGui {
             this.RtfSysInfo.BackColor = GuiTheme.Bg;
             this.RtfSysInfo.ForeColor = GuiTheme.Text;
 
-            this.RtfSysInfo.Location = new Point(14, HDR + 26);
+            this.RtfSysInfo.Location = new Point(PAD, HDR + 26);
             this.RtfSysInfo.ScrollBars = RichTextBoxScrollBars.None;
             this.RtfSysInfo.ShortcutsEnabled = false;
-            this.RtfSysInfo.Size = new Size(W - 28, 46);
+            this.RtfSysInfo.Size = new Size(W - 2 * PAD, 54);
             this.RtfSysInfo.TabStop = false;
             this.RtfSysInfo.WordWrap = false;
 
@@ -560,7 +561,7 @@ namespace OmenMon.AppGui {
             // ribbon. A fixed pitch gives the values a column to sit in and makes the
             // three lines scannable without changing a word of what they say.
             try {
-                this.RtfSysInfo.Font = new Font("Consolas", 8.25F, FontStyle.Regular, GraphicsUnit.Point);
+                this.RtfSysInfo.Font = new Font("Consolas", GuiTheme.FontMono, FontStyle.Regular, GraphicsUnit.Point);
             } catch {
                 if(Config.GuiSysInfoFontSize > 0)
                     this.RtfSysInfo.Font = new Font(
@@ -590,7 +591,7 @@ namespace OmenMon.AppGui {
             this.Controls.Add(this.GrpKbd);
             this.Controls.Add(this.GrpSys);
 
-            try { this.Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point); } catch { }
+            try { this.Font = new Font("Segoe UI", GuiTheme.FontBody, FontStyle.Regular, GraphicsUnit.Point); } catch { }
             this.AutoScaleMode = AutoScaleMode.None;
             this.AutoSize = false;
             this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GAP);

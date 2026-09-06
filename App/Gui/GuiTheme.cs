@@ -29,6 +29,19 @@ namespace OmenMon.AppGui {
         // being the one bright strip on screen.
         public static readonly Color Caption = Color.Black;
 
+        // Type scale. Three sizes plus a monospace one, rather than the five that had
+        // accumulated across the window (33 px, 9 pt, 8.25 pt, 7.5 pt and a
+        // config-driven figure size). Every extra size is one more thing for the eye to
+        // sort out, and none of the ones removed were carrying meaning the others did
+        // not already convey through position and colour.
+        //
+        // Hero is in pixels because it uses the bundled IoMon face, a bitmap design that
+        // only looks right at exact pixel sizes.
+        public const float FontHero  = 28F;   // px  - the CPU/GPU sensor readouts
+        public const float FontBody  = 9F;    // pt  - labels, buttons, section text
+        public const float FontSmall = 7.5F;  // pt  - graph axis ticks and legends
+        public const float FontMono  = 8.25F; // pt  - the system information strip
+
         // Entry point: theme a whole form, non-client area included.
         public static void Apply(Form form) {
             if(form == null) return;

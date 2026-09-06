@@ -123,11 +123,16 @@ laptop's own sensors, which were measured against them and found to be wrong.
 
 **Fan profile** — three profiles to choose from:
 
-| Profile | For |
-|---|---|
-| **Silent** | Everyday use. Fans stay at 1700 rpm until 52 °C. The default. |
-| **Default** | A middle setting; fans come up earlier. |
-| **Performance** | Gaming and sustained load. Loud, and the coolest. |
+| Profile | For | GPU power |
+|---|---|---|
+| **Silent** | Everyday use. Fans hold 1700 rpm until 65 °C, then rise gently. | **limited to 80 W** |
+| **Default** | A middle setting; fans come up earlier. | full 140 W |
+| **Performance** | Gaming and sustained load. Loud, and the coolest. | full 140 W |
+
+**The profile changes more than fan speed.** Silent also caps the graphics card at
+80 W instead of 140 W — roughly half its power. That is deliberate (it is what makes
+silence possible) but it is easy to miss, so if a game feels slow, check which profile
+is active. Confirmed against the driver's own reported limit, not inferred.
 
 Pick one and it applies immediately. The graph below shows that profile's curve, and you
 can edit it directly: **left-click** to add a point, **drag** to move one,
@@ -353,6 +358,26 @@ wrong direction to err for the part that was just shown to under-report.
   loses. Acquisition now retries across a budget (`EcMutexTotalTimeout`, default
   2500 ms). The error log names the competing process — on the first timeout observed
   here, there was none.
+- **Fan programs have no hysteresis, and re-evaluate every 15 s.**
+  `GetTemperatureLevel()` is a bare binary search with no dead band, so a temperature
+  resting on a threshold flips the fan between two levels every tick. This is the
+  second reason curves need dense points: at 14 °C spacing that is a ~1000 rpm pump
+  every 15 seconds, at 2 °C spacing it is 200 rpm and inaudible.
+- **Each profile sets `<GpuPower>`, and Silent sets `Minimum`** — 80 W against the
+  card's 140 W maximum, confirmed by `power.default_limit` vs `enforced.power.limit`.
+  Switching profile changes the GPU power budget as well as the fans. It also means
+  Silent's curve only ever has to cope with an 80 W GPU, a much milder worst case than
+  Performance's.
+- **Measured anchors at 80 W GPU:** the 1700 rpm floor leaves the die at 76 °C and
+  still climbing; 3800 rpm holds it at ~68 °C. Enough to choose a target temperature
+  rather than guess at rpm.
+- **Generating GPU load in a browser has three traps.** WebGL is capped by frame
+  presentation and reaches only half the power of a WebGPU compute loop; Chromium
+  throttles `requestAnimationFrame` on an occluded window, which silently ends a load
+  mid-test; and running compute and rendering together reset the GPU driver twice at
+  the same ~15 s mark, at two very different load sizes. Compute alone sustains 98%.
+  ~80 W is the honest browser ceiling on a 140 W card — the rest needs a real 3D
+  application. The harness is in `docs/`.
 - **The monitor thread starves under sustained full load** — 2 telemetry samples in
   15 minutes was observed — which also thins out `CheckThermalPanic`. Not yet fixed.
 - **Burn-in result:** peak **73.2 °C** after ~15 minutes of all-core load on the

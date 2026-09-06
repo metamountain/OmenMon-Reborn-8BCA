@@ -193,7 +193,7 @@ namespace OmenMon.AppGui {
 
             using(var axisPen = new Pen(GuiTheme.Border))
             using(var gridPen = new Pen(Color.FromArgb(0x2A, 0x2A, 0x30)))
-            using(var f = new Font("Segoe UI", 7.5f))
+            using(var f = new Font("Segoe UI", GuiTheme.FontSmall))
             using(var brM = new SolidBrush(GuiTheme.Muted)) {
 
                 // Y: fan speed (rpm)
@@ -222,7 +222,7 @@ namespace OmenMon.AppGui {
             DrawLine(g, 2, ColGpu);
 
             // Just the series key — the interaction is explained in the section itself
-            using(var fL = new Font("Segoe UI", 8.25f)) {
+            using(var fL = new Font("Segoe UI", GuiTheme.FontSmall)) {
                 float x = p.Left;
                 x = Legend(g, fL, x, ColCpu, "CPU");
                 x = Legend(g, fL, x, ColGpu, "GPU");

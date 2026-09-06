@@ -208,39 +208,67 @@
                 <FanMode>Default</FanMode>
                 <GpuPower>Minimum</GpuPower>
                 <Level Temperature="00">
-                    <Cpu>21</Cpu>
-                    <Gpu>00</Gpu>
+                    <Cpu>17</Cpu>
+                    <Gpu>17</Gpu>
                 </Level>
-                <Level Temperature="50">
-                    <Cpu>25</Cpu>
-                    <Gpu>00</Gpu>
+                <Level Temperature="65">
+                    <Cpu>18</Cpu>
+                    <Gpu>18</Gpu>
                 </Level>
-                <Level Temperature="55">
+                <Level Temperature="67">
+                    <Cpu>20</Cpu>
+                    <Gpu>20</Gpu>
+                </Level>
+                <Level Temperature="69">
+                    <Cpu>22</Cpu>
+                    <Gpu>22</Gpu>
+                </Level>
+                <Level Temperature="71">
+                    <Cpu>23</Cpu>
+                    <Gpu>23</Gpu>
+                </Level>
+                <Level Temperature="73">
                     <Cpu>25</Cpu>
                     <Gpu>25</Gpu>
                 </Level>
-                <Level Temperature="60">
-                    <Cpu>30</Cpu>
-                    <Gpu>30</Gpu>
-                </Level>
-                <Level Temperature="65">
-                    <Cpu>35</Cpu>
-                    <Gpu>35</Gpu>
-                </Level>
-                <Level Temperature="70">
-                    <Cpu>40</Cpu>
-                    <Gpu>40</Gpu>
-                </Level>
                 <Level Temperature="75">
+                    <Cpu>27</Cpu>
+                    <Gpu>27</Gpu>
+                </Level>
+                <Level Temperature="77">
+                    <Cpu>31</Cpu>
+                    <Gpu>31</Gpu>
+                </Level>
+                <Level Temperature="79">
+                    <Cpu>34</Cpu>
+                    <Gpu>34</Gpu>
+                </Level>
+                <Level Temperature="81">
+                    <Cpu>38</Cpu>
+                    <Gpu>38</Gpu>
+                </Level>
+                <Level Temperature="83">
+                    <Cpu>41</Cpu>
+                    <Gpu>41</Gpu>
+                </Level>
+                <Level Temperature="85">
                     <Cpu>45</Cpu>
                     <Gpu>45</Gpu>
                 </Level>
-                <Level Temperature="80">
-                    <Cpu>50</Cpu>
-                    <Gpu>50</Gpu>
+                <Level Temperature="87">
+                    <Cpu>48</Cpu>
+                    <Gpu>48</Gpu>
                 </Level>
-                <Level Temperature="85">
+                <Level Temperature="89">
+                    <Cpu>52</Cpu>
+                    <Gpu>52</Gpu>
+                </Level>
+                <Level Temperature="91">
                     <Cpu>55</Cpu>
+                    <Gpu>55</Gpu>
+                </Level>
+                <Level Temperature="92">
+                    <Cpu>57</Cpu>
                     <Gpu>57</Gpu>
                 </Level>
             </Program>
@@ -265,14 +293,11 @@
             <ExecArgs>/c start /min "" powershell -WindowStyle Hidden (Add-Type '[DllImport(\"user32.dll\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name User32 -PassThru)::SendMessage(-1, 0x0112, 0xF170, 2) ^| Out-Null</ExecArgs>
             <Minimized>true</Minimized>
         </KeyCustomAction>
-        
         <!-- Cycle through keyboard color presets on Omen key press -->
         <!-- Takes priority over KeyToggleFanProgram and KeyCustomAction -->
         <KeyToggleColorPreset>true</KeyToggleColorPreset>
-        
         <!-- Suppress the balloon tip notification when cycling presets -->
         <KeyToggleColorPresetSilent>false</KeyToggleColorPresetSilent>
-
         <KeyToggleFanProgram>false</KeyToggleFanProgram>
         <KeyToggleFanProgramCycleAll>true</KeyToggleFanProgramCycleAll>
         <KeyToggleFanProgramShowGuiFirst>true</KeyToggleFanProgramShowGuiFirst>
@@ -457,7 +482,6 @@
                 <ModeReg>149</ModeReg>
                 <SwitchReg>244</SwitchReg>
             </Model>
-
             <!-- 8BD4: HP Victus 16-S0053NT (2024) — fan level at 0x11/0x14. -->
             <!-- Single fan controller; both fans run synchronised. Legacy 0xB0/0xB2 RPM offsets are -->
             <!-- repurposed as temperature sensors on this board. The fan tachometer is the level -->

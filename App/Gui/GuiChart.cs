@@ -84,7 +84,7 @@ namespace OmenMon.AppGui {
 
             using(var axisPen  = new Pen(GuiTheme.Border))
             using(var gridPen  = new Pen(Color.FromArgb(0x2A, 0x2A, 0x30)))
-            using(var fAx      = new Font("Segoe UI", 7.5f))
+            using(var fAx      = new Font("Segoe UI", GuiTheme.FontSmall))
             using(var brMuted  = new SolidBrush(GuiTheme.Muted)) {
 
                 // ---- left axis: temperature -------------------------------------
@@ -130,7 +130,7 @@ namespace OmenMon.AppGui {
 
             // ---- legend with live values ---------------------------------------
             int i = count - 1;
-            using(var fL = new Font("Segoe UI", 8.25f)) {
+            using(var fL = new Font("Segoe UI", GuiTheme.FontSmall)) {
                 float x = p.Left;
                 x = Legend(g, fL, x, ColCpuT, count > 0 ? "CPU " + cpuT[i] + "°" : "CPU –");
                 x = Legend(g, fL, x, ColGpuT, count > 0 ? "GPU " + gpuT[i] + "°" : "GPU –");

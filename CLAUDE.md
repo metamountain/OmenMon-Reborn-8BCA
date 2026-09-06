@@ -130,6 +130,76 @@ thread holds `Global\Access_EC` for a whole `EcExecBatch` pass, and `Hardware/Ec
 read backoff `Wait()`s while holding it. `Hw.EcRequest()` now retries across
 `EcMutexTotalTimeout` (2500 ms) instead of making a single `EcMutexTimeout` attempt.
 
+### Fan programs have no hysteresis, and tick every 15 s
+
+`FanProgram.GetTemperatureLevel()` is a plain binary search over the threshold list.
+There is no dead band. A temperature sitting on a threshold therefore flips the fan
+between two levels every `UpdateProgramInterval` (15 s by default).
+
+This is the second reason curves need dense points, and the less obvious one. With
+14 C gaps between rows the oscillation is a ~1000 rpm pump every 15 seconds; at 2 C
+spacing it is 200 rpm and inaudible. Densifying is not only about smooth response - it
+is what makes the missing hysteresis stop mattering.
+
+### Silent caps the GPU at 80 W
+
+Each fan program carries a `<GpuPower>` element. Silent and "My profile" set `Minimum`,
+Default and Performance set `Maximum`. Confirmed from the driver side:
+
+```
+power.default_limit    80 W     <- what Silent leaves in force
+enforced.power.limit  140 W     <- after switching to Performance
+power.max_limit       140 W
+```
+
+So the profile does not merely change fan behaviour: **Silent halves the GPU power
+budget**, and nothing in the UI says so. It also means Silent's worst case is much
+milder than Performance's - its curve only ever has to cope with an 80 W GPU.
+
+### Measured thermal anchors (GPU at 80 W)
+
+| fan | steady GPU temperature |
+|---|---|
+| 1700 rpm (floor) | 76 C, still climbing when stopped |
+| 3800 rpm | ~68 C, stable |
+
+Two points, but real ones - enough to choose a target temperature instead of guessing
+at rpm. A proper characterisation (hold 80 W, step the fan, record steady state) would
+turn curve design into arithmetic; every curve number written so far has been an
+educated guess, and two of those guesses were wrong.
+
+### Fan response, verified end to end
+
+With the sensors fixed and the Performance profile active:
+
+```
+ 5 s   gpu 68 C -> gpu fan 3800 rpm    cpu 45 C -> cpu fan 2000 rpm
+10 s   cpu 66 C -> cpu fan 3700 rpm    gpu 49 C -> gpu fan 2500 rpm
+```
+
+Each fan follows its own component, independently and in opposite directions at the
+same moment, and both step back down on cooldown (3500 -> 2500 -> 2000). This is what
+`FanProgram` intends and what was broken while the sensor overrides sat in the GUI
+layer.
+
+### Generating GPU load without installing anything
+
+Edge with WebGPU compute reaches 95-98% utilisation and ~80 W. Notes that cost time:
+
+- **WebGL alone tops out near half that**, because rendering is tied to frame
+  presentation - the GPU idles between presents. Compute has no such ceiling.
+- **Chromium throttles `requestAnimationFrame` when a window is occluded**, which
+  killed a load mid-test (47 W at 25 s, 15 W and 0% by 56 s, Edge still running).
+  Needs `--disable-backgrounding-occluded-windows`,
+  `--disable-background-timer-throttling`, `--disable-renderer-backgrounding`,
+  `--disable-features=CalculateNativeWinOcclusion`, plus `--disable-gpu-vsync`.
+- **Do not run WebGPU compute and WebGL rendering together.** It reset the GPU driver
+  (TDR) twice at the same ~15 s mark at two very different load sizes, so it is the
+  combination, not the magnitude. Compute alone sustained 98% for over a minute.
+- ~80 W is the honest ceiling for a browser load on a card allowed 140 W, with
+  `SW Power Cap: Not Active`. A browser cannot produce the mixed ALU/texture/ROP/memory
+  load a 3D engine does. Reaching the real budget needs a game or a dedicated burner.
+
 ## Disproven — do not resurrect
 
 These were believed, acted on, and are wrong. They are recorded because the sources
