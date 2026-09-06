@@ -118,9 +118,9 @@
         <!-- Use the Embedded Controller instead of a BIOS call for fan-level setting -->
         <FanLevelUseEc>false</FanLevelUseEc>
         <!-- Default fan program, which might be loaded on startup (must match a <Program Name="..."> entry) -->
-        <FanProgramDefault>Power</FanProgramDefault>
+        <FanProgramDefault>Default</FanProgramDefault>
         <!-- Default alternate fan program to switch to if no longer on AC power -->
-        <FanProgramDefaultAlt>Silent</FanProgramDefaultAlt>
+        <FanProgramDefaultAlt>Default</FanProgramDefaultAlt>
         <!-- Check first (using the EC) if the fan mode is not set already -->
         <FanProgramModeCheckFirst>false</FanProgramModeCheckFirst>
         <!-- Suspend fan program whenever the system enters low-power mode -->
@@ -881,8 +881,8 @@
         </Models>
         <!-- Update Interval -->
         <UpdateIconInterval>3</UpdateIconInterval>
-        <UpdateMonitorInterval>3</UpdateMonitorInterval>
-        <UpdateProgramInterval>15</UpdateProgramInterval>
+        <UpdateMonitorInterval>2</UpdateMonitorInterval>
+        <UpdateProgramInterval>2</UpdateProgramInterval>
     </Config>
     <!-- Localizable Messages -->
     <Messages>

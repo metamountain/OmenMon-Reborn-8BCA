@@ -393,7 +393,7 @@ namespace OmenMon.AppGui {
             // power mode are derived from it so the three can never disagree.
             // 25..54 W: the 7840HS cTDP window (45 W stock); the BIOS clamps above 54,
             // and below ~25 the part throttles without getting meaningfully cooler.
-            MakeMini("Sustained", new Point(W - 176, HDR + 42), capFont, this.GrpPwr);
+            MakeMini("Sustained", new Point(W - 196, HDR + 42), capFont, this.GrpPwr);
             this.NumPwrWatt.Minimum = 25;
             this.NumPwrWatt.Maximum = 54;
             this.NumPwrWatt.Value = 45;
@@ -478,17 +478,24 @@ namespace OmenMon.AppGui {
             this.CmbKbdColorPreset.Location = new Point(PAD, py);
             this.CmbKbdColorPreset.Size = new Size(132, 26);
 
-            this.BtnKbdColorPresetSet.Location = new Point(156, py - 1);
-            this.BtnKbdColorPresetSet.Size = new Size(56, 27);
+            // Laid out from the measured text: the fixed 56/60/56 px widths showed
+            // "Rena" and "Delet". Each button takes what its label needs plus padding,
+            // and the next one starts after it.
             this.BtnKbdColorPresetSet.Text = "Save…";
-
-            this.BtnKbdColorPresetRen.Location = new Point(216, py - 1);
-            this.BtnKbdColorPresetRen.Size = new Size(60, 27);
             this.BtnKbdColorPresetRen.Text = "Rename";
-
-            this.BtnKbdColorPresetDel.Location = new Point(280, py - 1);
-            this.BtnKbdColorPresetDel.Size = new Size(56, 27);
             this.BtnKbdColorPresetDel.Text = "Delete";
+
+            int bx = 156;
+            foreach(Button b in new Button[] {
+                this.BtnKbdColorPresetSet, this.BtnKbdColorPresetRen, this.BtnKbdColorPresetDel }) {
+                int bw = 56;
+                try {
+                    bw = Math.Max(bw, TextRenderer.MeasureText(b.Text, this.Font).Width + 22);
+                } catch { }
+                b.Location = new Point(bx, py - 1);
+                b.Size = new Size(bw, 27);
+                bx += bw + 6;
+            }
 
             // Hex value on its own line under the preset row
             this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
@@ -715,10 +722,17 @@ namespace OmenMon.AppGui {
 #endregion
         }
 
+        // Width comes from the text, not from a constant. The fixed 44 px this replaces
+        // clipped "Sustained" to "Susta" and "Profile" to "Profil", and would have gone
+        // on clipping anything longer — including after the type scale changed.
         private void MakeMini(string text, Point at, Font f, Control parent) {
+            int w = 44;
+            try {
+                w = Math.Max(w, TextRenderer.MeasureText(text, f).Width + 6);
+            } catch { }
             var l = new Label {
                 AutoSize = false, Text = text, Font = f, ForeColor = GuiTheme.Muted,
-                Location = at, Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleLeft,
+                Location = at, Size = new Size(w, 22), TextAlign = ContentAlignment.MiddleLeft,
                 BackColor = Color.Transparent
             };
             parent.Controls.Add(l);
