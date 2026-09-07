@@ -67,11 +67,15 @@ namespace OmenMon.AppGui {
             return GdiFont.Get(bold ? FaceUiBold : FaceUi, size);
         }
 
-        // Inner padding for section content, and for the caption and rule that head it.
-        // Shared with the layout code: the caption and its hairline used to be drawn at
-        // x = 0 while every control inside sat at 16, so left edges alternated between
-        // the two all the way down the window and each rule overhung its own content.
-        public const int Pad = 16;
+        // The one margin. Every left edge in the window is this far from the section
+        // edge and every right edge is this far from the other side — captions, rules,
+        // controls, and both graphs, whose scale numbers now start on this column too
+        // rather than floating ten pixels inside it.
+        //
+        // 10 rather than 16: at 16 the window carried more margin than content in the
+        // narrow rows, and a slimmer, strictly uniform border reads calmer than a wide
+        // one that anything is allowed to deviate from.
+        public const int Pad = 10;
 
         // Entry point: theme a whole form, non-client area included.
         public static void Apply(Form form) {

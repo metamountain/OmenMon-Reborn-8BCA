@@ -69,15 +69,44 @@ namespace OmenMon.AppGui {
             if(IsHandleCreated) Invalidate();
         }
 
-        // Width of the left scale gutter, shared with GuiCurveEditor
-        internal const int AxisLeft = 44;
+        // Gap between a scale number and the plot frame it labels
+        internal const int AxisGap = 5;
+
+        // The scale gutters, measured rather than guessed.
+        //
+        // They were 44 and 52 — numbers wide enough for any label, which left the scale
+        // numbers floating ten to fifteen pixels inside the section's text column. The
+        // graph then read as indented relative to everything above it, which is most of
+        // why this window looked restless. Measured from the widest label each side can
+        // actually draw, the numbers start exactly on the left margin and end exactly on
+        // the right one, so the graph occupies the same column as the text.
+        //
+        // Both gutters are shared with GuiCurveEditor, and deliberately so: the two
+        // graphs are stacked, and if each sized its own the frames would not line up
+        // even though both were individually correct. The curve editor has no right-hand
+        // scale, but it adopts this right gutter anyway so the two frames end on one
+        // pixel column.
+        private static int axisLeft, axisRight;
+
+        internal static int AxisLeft  { get { return axisLeft  > 0 ? axisLeft  : 30; } }
+        internal static int AxisRight { get { return axisRight > 0 ? axisRight : 28; } }
+
+        // Widest labels either stacked graph draws: this chart's temperature scale
+        // ("100°"), and the rpm scale used by this chart's right axis and by the curve
+        // editor's left axis ("6.0k"). Measured once, on the first paint that has a
+        // Graphics to measure with.
+        internal static void MeasureAxes(Graphics g, Font f) {
+            if(axisLeft > 0) return;
+            float temp = g.MeasureString(TMax + "°", f).Width;
+            float rate = g.MeasureString((RMax / 1000.0).ToString("0.0") + "k", f).Width;
+            axisLeft  = (int) Math.Ceiling(Math.Max(temp, rate)) + AxisGap;
+            axisRight = (int) Math.Ceiling(rate) + AxisGap;
+        }
 
         // Plot rectangle, leaving room for the three axes and the legend row.
         private Rectangle Plot {
-            // Left inset is shared with GuiCurveEditor so the two stacked graphs line
-            // up: the temperature scale here and the rpm scale below start on the same
-            // pixel column, and both sit hard against the section margin.
-            get { return new Rectangle(AxisLeft, 26, Math.Max(10, Width - AxisLeft - 52), Math.Max(10, Height - 26 - 20)); }
+            get { return new Rectangle(AxisLeft, 26,
+                Math.Max(10, Width - AxisLeft - AxisRight), Math.Max(10, Height - 26 - 20)); }
         }
 
         protected override void OnPaint(PaintEventArgs e) {
@@ -85,6 +114,12 @@ namespace OmenMon.AppGui {
             g.Clear(GuiTheme.Bg);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            // Before Plot is read: the gutters it returns are measured from the caption
+            // font, and this is the first place with a Graphics to measure against.
+            using(var fMeasure = GuiTheme.Ui(GuiTheme.FontCaption))
+                MeasureAxes(g, fMeasure);
+
             Rectangle p = Plot;
             if(p.Width < 20 || p.Height < 20) return;
 

@@ -206,8 +206,14 @@ namespace OmenMon.AppGui {
         private static int Clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
         private Rectangle Plot {
+            // Both gutters come from GuiChart. This editor has no right-hand scale and
+            // could run its plot nearer the edge, but the two graphs are stacked and a
+            // frame that ended on a different pixel column from the one above it is
+            // exactly the kind of near-miss that reads as untidy. The right gutter also
+            // keeps the handle at TMax from being clipped by the control edge.
             get { return new Rectangle(GuiChart.AxisLeft, 26,
-                Math.Max(10, Width - GuiChart.AxisLeft - 14), Math.Max(10, Height - 48)); }
+                Math.Max(10, Width - GuiChart.AxisLeft - GuiChart.AxisRight),
+                Math.Max(10, Height - 48)); }
         }
 
         private Point ToScreen(int tempC, int level) {
@@ -230,6 +236,13 @@ namespace OmenMon.AppGui {
             g.Clear(GuiTheme.Bg);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            // Also measured here, not only in GuiChart: whichever of the two graphs
+            // paints first has to establish the shared gutters, or the other spends a
+            // frame on the fallback and the frames visibly disagree.
+            using(var fMeasure = GuiTheme.Ui(GuiTheme.FontCaption))
+                GuiChart.MeasureAxes(g, fMeasure);
+
             Rectangle p = Plot;
             if(p.Width < 20 || p.Height < 20) return;
 
