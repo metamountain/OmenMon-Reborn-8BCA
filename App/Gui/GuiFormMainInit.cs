@@ -267,7 +267,7 @@ namespace OmenMon.AppGui {
             // the controls need is shared out rather than left at the bottom: each panel
             // gets a third, and the rows inside it spread to fill (see the sections).
             const int H_TMP_MIN = HDR + 100;   // hero readout: second row at HDR+58, 40 tall
-            const int H_PWR_MIN = HDR + 106;   // two rows of radios, then the hint at HDR+68
+            const int H_PWR_MIN = HDR + 176;   // two radio rows, the wattage row, four hint lines
             const int H_SYS_MIN = HDR + 88;    // autostart, buttons, three lines of Consolas
 
             const int H_SLACK = (ROW - 2 * GAP - H_TMP_MIN - H_PWR_MIN - H_SYS_MIN) / 3;
@@ -599,8 +599,11 @@ namespace OmenMon.AppGui {
             this.LblPwrHint.AutoSize = false;
             this.LblPwrHint.Font = capFont;
             this.LblPwrHint.ForeColor = GuiTheme.Muted;
-            this.LblPwrHint.Location = new Point(PAD, HDR + 68);
-            this.LblPwrHint.Size = new Size(PCAPX - GUT - PAD, 34);
+            // Full width, below the wattage row — beside the spinner it was 286 px wide
+            // and the CPU-limits line was simply cut off, which is why the panel appeared
+            // to say nothing but the Windows mode.
+            this.LblPwrHint.Location = new Point(PAD, HDR + 104);
+            this.LblPwrHint.Size = new Size(W - 2 * PAD, 62);
             this.LblPwrHint.Text = "";
 
             this.Tip.SetToolTip(this.RdoPwrEco,
@@ -772,8 +775,12 @@ namespace OmenMon.AppGui {
 
 #region Section: System
             this.ChkAutoStart.AutoCheck = false;
+            // AutoSize, not a written-down 220. At 220 it spanned x 10-230 and, being added
+            // to the panel before the update button, sat on top of it in the z-order and
+            // covered its first three characters - "Check for updates" rendered as
+            // "ck for updates".
+            this.ChkAutoStart.AutoSize = true;
             this.ChkAutoStart.Location = new Point(PAD, HDR);
-            this.ChkAutoStart.Size = new Size(220, 22);
             this.ChkAutoStart.Text = "Start with Windows";
 
             // The tray menu is gone from the UI — Exit is the one thing it was still

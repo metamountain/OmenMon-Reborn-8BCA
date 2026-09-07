@@ -68,6 +68,12 @@ namespace OmenMon.Driver {
         [DllImport(DllName, ExactSpelling = true)]
         private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensorType, out uint temp);
 
+        // The limit actually in force, in milliwatts — what the board will let the GPU
+        // draw right now, after cTGP and PPAB have been applied. Read rather than derived
+        // from those two flags: the flags say which knobs are on, not what they came to.
+        [DllImport(DllName, ExactSpelling = true)]
+        private static extern int nvmlDeviceGetEnforcedPowerLimit(IntPtr device, out uint milliwatts);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct Utilization { public uint Gpu; public uint Memory; }
 
@@ -224,6 +230,28 @@ namespace OmenMon.Driver {
         // ordinary idle state here, not an alarm: a parked GPU has a stale session by
         // definition, which is why the caller applies a long grace period before treating
         // it as a lost sensor.
+        // The GPU power limit currently in force, in whole watts. Reports what the board
+        // will actually allow, which is the number worth showing next to the CPU's: on
+        // this machine it reads 80 W with cTGP and PPAB off and 140 W with them on, and
+        // the fan profile is what sets them — so the figure moves with the profile, not
+        // with the Windows power mode beside it.
+        public static bool TryGetGpuPowerLimit(out int watts) {
+            watts = 0;
+            if(!tried)
+                Open();
+            if(device == IntPtr.Zero)
+                return false;
+            try {
+                uint mw;
+                if(nvmlDeviceGetEnforcedPowerLimit(device, out mw) != 0 || mw == 0)
+                    return false;
+                watts = (int) ((mw + 500) / 1000);
+                return true;
+            } catch {
+                return false;
+            }
+        }
+
         public static bool TryGetGpuTemperature(out int celsius) {
             celsius = 0;
             if(!tried)

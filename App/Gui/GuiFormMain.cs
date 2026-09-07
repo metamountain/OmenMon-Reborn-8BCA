@@ -453,13 +453,23 @@ namespace OmenMon.AppGui {
         // power mode belongs to which CPU limit.
         private void ShowPwrState(string winMode, byte pl1, byte pl2, byte pl4,
                                   string character, bool winOk) {
-            string band = pl1 <= 35 ? "≤ 35 W band"
-                        : pl1 >= 50 ? "≥ 50 W band"
-                                    : "36–49 W band";
+            // Both processors' limits, because a "power mode" that only states the CPU's
+            // is half the answer — on this machine the GPU's ceiling moves between 80 and
+            // 140 W and is the larger number of the two.
+            //
+            // The GPU figure is read from NVML rather than derived from the cTGP/PPAB
+            // flags, and it is labelled with what sets it: the fan profile, not the mode
+            // selected here. Those are genuinely different controls and showing them in
+            // one block without saying so would imply the buttons above change both.
+            int gpuW;
+            string gpuLine = OmenMon.Driver.Nvml.TryGetGpuPowerLimit(out gpuW)
+                ? string.Format("GPU limit: {0} W in force — set by the fan profile, not by this", gpuW)
+                : "GPU limit: unavailable (NVML)";
+
             this.LblPwrHint.Text = string.Format(
-                "Windows power mode: {0}  ({1}){2}\nCPU limits: {3} W sustained · {4} W boost · {5} W peak — {6}",
-                winMode, band, winOk ? "" : "  — Windows refused the change",
-                pl1, pl2, pl4, character);
+                "Windows power mode: {0}{1}\nCPU limits: {2} W sustained · {3} W boost · {4} W peak\n{5}\n{6}",
+                winMode, winOk ? "" : "  — Windows refused the change",
+                pl1, pl2, pl4, gpuLine, character);
         }
 
         // Reflect the stored preset in the selector without re-applying it. The CPU
