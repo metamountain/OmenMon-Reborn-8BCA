@@ -396,14 +396,24 @@ namespace OmenMon.AppGui {
                         //
                         // Gated on the countdown: if the firmware has taken the fans back,
                         // a genuine drop must be allowed to show.
+                        // Reported, never substituted.
+                        //
+                        // This briefly replaced the reading with the commanded value, to
+                        // keep a bad read out of the display. That was a mistake: the
+                        // snapshot is also what the telemetry CSV records, so it wrote 55
+                        // into the log at 2026-09-07 20:20:24 when the hardware had
+                        // answered 18 — destroying the evidence for the very question
+                        // being investigated, which is whether these divergences are bad
+                        // reads or writes that did not take.
+                        //
+                        // Until a microphone says which it is (omen-fanaudio.ps1), the
+                        // reading stands as recorded and the divergence is logged beside
+                        // it. A diagnostic must not decide what the truth was.
                         if(s.Countdown > 0 && commanded != null
-                            && commanded[i] - s.FanLevel[i] > MaxPlausibleLevelDrop) {
+                            && commanded[i] - s.FanLevel[i] > MaxPlausibleLevelDrop)
                             Config.ErrorLog("Monitor.FanLevelDiverged", null,
                                 "fan " + i + " read " + s.FanLevel[i] + " while commanded "
-                                    + commanded[i] + "; holding the commanded value");
-                            s.FanLevel[i] = commanded[i];
-                            s.FanSpeed[i] = (ushort) (commanded[i] * 100);
-                        }
+                                    + commanded[i] + " (reading kept; cause unresolved)");
                     }
                     if(s.Countdown == 0 && last.Countdown > 0) s.Countdown = last.Countdown;
                 }
