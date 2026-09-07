@@ -30,6 +30,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **EC lock contention was under-reported.** `EcContenderNames` matched process names
   exactly, so `OmenCap` and `HPSystemEventUtilityBackground` were logged as "none
   detected" while running. Matching is now by substring.
+- **The BIOS fan countdown could lapse under load, handing the fans to the firmware.**
+  `Hw.EcExec` silently discards a write it cannot take the EC lock for, and the countdown
+  refresh was both the last step of the fan-program pass and guarded on
+  `FanProgramModeCheckFirst`, which is false in the shipped config — so it never ran, and
+  the watchdog was fed only by a side effect of the fan-mode write. Measured consequence:
+  the CPU fan fell from 4400 to 1500 rpm at 90 °C and the CPU reached 94 °C before the
+  next write landed. The refresh now runs first, unconditionally, and checks that the
+  write reached the hardware, retrying and logging when it does not. Constant-speed mode
+  uses the same path.
 
 ### Added
 

@@ -315,16 +315,38 @@ down, and a permanently dead sensor still leaves the card ventilated. `nvmlWasSo
 latches on the first good NVML read so a machine that never had a die sensor keeps the
 old GPTM behaviour.
 
+### A dropped EC write is silent, and that is how the watchdog lapsed
+
+`Hw.EcExec` runs its callback only if it can take `Global\Access_EC` within
+`EcMutexTotalTimeout`. If it cannot, the callback never runs — and the write overload
+returns `void`. A dropped read is a missing sample; a dropped write to the countdown at
+`0x63` is a loss of fan control about `FanCountdownExtendInterval` later, reported
+nowhere.
+
+It got worse than that. `UpdateCountdown()` was guarded on `FanProgramModeCheckFirst`,
+which is **false** in the shipped config, so it never ran at all: the only thing feeding
+the watchdog was the incidental countdown reset inside `UpdateFanMode`'s forced write.
+One dropped write and nothing was feeding it. The call is now first in `Update()`,
+unconditional, and checks `Hw.EcLockTimeoutCount` across the write to see whether it
+landed, retrying `CountdownWriteAttempts` times and logging when it does not.
+
+**The lapse is real, but most `countdown == 0` rows in the telemetry are not it.** In a
+failed EC batch every EC-derived column reads 0 together — `cpu_lvl`, `gpu_lvl`,
+`cpu_pct`, `gpu_pct` and `countdown` — while `cpu_rpm` shows the fans still doing what
+the curve asked. 145 of 1895 rows read `countdown == 0`; nearly all are that. The one
+genuine lapse is distinguishable because **the fan level itself collapses to something
+the curve would never choose**: at 21:29:29, `cpu_lvl` 44 → 15 (4400 → 1500 rpm) with
+the CPU at 90 °C, then 94 °C, recovering to level 45 at 21:29:44 as the countdown read
+120 again. Read the level column, not the countdown column.
+
 ## Still open
 
-- **The BIOS countdown watchdog lapses under sustained full CPU load.** Observed twice:
-  the countdown at `0x63` expired, the firmware took the fans at 78 C, and the CPU then
-  reached 94 C. Raising `FanCountdownExtendThreshold` from 5 to 60 and setting the
-  monitor thread to `AboveNormal` did **not** prevent the second lapse. This is the most
-  important open item — it is a safety path that is known to fail.
 - **Monitor thread starves under sustained full load** — 2 telemetry samples in 15
   minutes observed. Thread priority is now `AboveNormal` and `TelemetryEvery` is 8
-  (was 30), which helped but did not fix the item above. Also thins `CheckThermalPanic`.
+  (was 30). Measured after both: at 2026-09-06 21:22 the telemetry interval was still
+  44-47 s against a nominal 8, so the loop was running about 5x slow. That is survivable
+  now that the countdown no longer depends on the pass finishing, but it still thins
+  `CheckThermalPanic`.
 - **No independent CPU cross-check is available.** `MSAcpi_ThermalZoneTemperature` is
   access-denied unelevated, and running Core Temp breaks this program's own SMN read
   (see the contention note above). Verification currently depends on one source.

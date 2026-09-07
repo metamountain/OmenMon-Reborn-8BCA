@@ -88,6 +88,15 @@ namespace OmenMon.Hardware.Platform {
         // One level - 100 rpm - per tick, in both the CPU and GPU untrusted ramps
         private const int UntrustedRampStep = 1;
 
+        // Attempts at the countdown write within a single pass. Three, because the write
+        // is one byte and each attempt already retries internally for EcMutexTotalTimeout
+        // — so this is a third chance at the lock, not a busy loop, and it is bounded so
+        // that a genuinely stuck EC cannot hold the monitor thread here indefinitely.
+        private const int CountdownWriteAttempts = 3;
+
+        // Consecutive dropped countdown writes, for the log line that reports recovery
+        private int countdownWriteFailures;
+
         // The GPU side of the same problem, but ramping the other way: see Update(). The
         // held GPU value can only be too high, so its floor walks down rather than up.
         private int gpuUntrustedLevel;
@@ -275,6 +284,29 @@ namespace OmenMon.Hardware.Platform {
             // or program is suspended
             if(!this.IsEnabled || this.IsSuspended)
                 return false;
+
+            // Re-arm the BIOS countdown first, before anything that can be slow.
+            //
+            // The countdown at EC 0x63 hands the fans to the firmware if it is not
+            // refreshed within FanCountdownExtendInterval. Measured lapse, 2026-09-06
+            // 21:29:29: the CPU fan fell from 4400 rpm (level 44) to 1500 rpm (level 15)
+            // while the CPU was at 90 °C, which the curve would never ask for; the CPU
+            // reached 94 °C and only recovered at 21:29:44, the moment the countdown read
+            // 120 again and the level jumped back to 45.
+            //
+            // Two things made that possible. The refresh used to be the *last* step of
+            // this pass, behind every sensor read, the level write, the mode check and
+            // the GPU power update — and each EC operation in front of it can retry for
+            // EcMutexTotalTimeout before giving up. And the call was guarded on
+            // FanProgramModeCheckFirst, which is false in the shipped config, so
+            // UpdateCountdown() was never reached at all: the only thing refreshing the
+            // countdown was the side effect of UpdateFanMode's forced write. One dropped
+            // write and the watchdog was simply not fed, with nothing to notice.
+            //
+            // So it goes first, it goes unconditionally, and it verifies. Raising
+            // FanCountdownExtendThreshold and the monitor thread's priority did not
+            // prevent the second lapse because neither addressed either half of this.
+            UpdateCountdown(true);
 
             // Read individual CPU and GPU temperatures.
             // GetCpuTemperature updates all sensors once; GetGpuTemperature
@@ -470,11 +502,6 @@ namespace OmenMon.Hardware.Platform {
             UpdateFanMode(!Config.FanProgramModeCheckFirst);
             UpdateGpuPower();
 
-            // Fan-mode setting resets the countdown,
-            // thus no need to update in such case
-            if(Config.FanProgramModeCheckFirst)
-                UpdateCountdown();
-
             // Report success
             return true;
 
@@ -590,8 +617,9 @@ namespace OmenMon.Hardware.Platform {
 
         }
 
-        // Updates the fan manual mode countdown, optionally only if necessary
-        public void UpdateCountdown(bool forceUpdate = false, bool skipZero = false) {
+        // Updates the fan manual mode countdown, optionally only if necessary.
+        // Returns true if the countdown was refreshed, or did not need to be.
+        public bool UpdateCountdown(bool forceUpdate = false, bool skipZero = false) {
             int countdown = 1;
 
             // Avoid unnecessarily querying the countdown,
@@ -601,17 +629,58 @@ namespace OmenMon.Hardware.Platform {
 
             // Optionally, do not update if no countdown
             if(skipZero && countdown == 0)
-                return;
+                return true;
 
             // Skip if there still is enough time to do it
             // during the next update, unless forced not to
-            if(forceUpdate
-                || countdown
-                    < (Config.UpdateProgramInterval
+            if(!forceUpdate
+                && countdown
+                    >= (Config.UpdateProgramInterval
                         + Config.FanCountdownExtendThreshold))
+                return true;
 
-               // Set the fan countdown
-               this.Platform.Fans.SetCountdown(Config.FanCountdownExtendInterval);
+            // Write the countdown, and check that the write actually landed.
+            //
+            // Hw.EcExec drops a write on the floor when it cannot take Global\Access_EC
+            // within EcMutexTotalTimeout: the callback never runs, EcSetByte returns
+            // void, and the caller is told nothing. For an ordinary sensor that is a
+            // missing sample. For this register it is a loss of fan control roughly
+            // FanCountdownExtendInterval later, which is how the CPU reached 94 °C on
+            // 2026-09-06 with no error logged anywhere.
+            //
+            // Hw.EcLockTimeoutCount counts exactly those dropped operations, so a delta
+            // across the write says whether it happened without costing an extra read.
+            // SetCountdown's own read-back can also time out and inflate the delta, which
+            // makes this err towards a retry rather than towards a false success — the
+            // right way round for a watchdog, and the write is idempotent.
+            for(int attempt = 1; attempt <= CountdownWriteAttempts; attempt++) {
+
+                int timeouts = Hw.EcLockTimeoutCount;
+                this.Platform.Fans.SetCountdown(Config.FanCountdownExtendInterval);
+
+                if(Hw.EcLockTimeoutCount == timeouts) {
+                    if(this.countdownWriteFailures > 0) {
+                        Config.ErrorLog("FanProgram.Countdown", null,
+                            "countdown re-armed after " + this.countdownWriteFailures
+                                + " failed attempt(s); fan control was never handed over");
+                        this.countdownWriteFailures = 0;
+                    }
+                    return true;
+                }
+
+            }
+
+            // Every attempt was dropped. Say so: the fans are now on a timer that nothing
+            // is feeding, and the next pass may not get the lock either.
+            this.countdownWriteFailures += CountdownWriteAttempts;
+            Status(Severity.Important,
+                "Could not re-arm the fan countdown - the firmware may take the fans");
+            Config.ErrorLog("FanProgram.Countdown", null,
+                "could not write the fan countdown in " + CountdownWriteAttempts
+                    + " attempts (" + this.countdownWriteFailures + " consecutive failures); "
+                    + "the firmware takes the fans when it expires");
+
+            return false;
 
         }
 

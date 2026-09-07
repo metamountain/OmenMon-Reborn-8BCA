@@ -567,7 +567,13 @@ namespace OmenMon.AppGui {
                     int countdown = op.Platform.Fans.GetCountdown();
                     if(countdown < Config.UpdateMonitorInterval + Config.FanCountdownExtendThreshold) {
                         op.Platform.Fans.SetMode(op.Platform.Fans.GetMode());
-                        op.Platform.Fans.SetCountdown(Config.FanCountdownExtendInterval);
+
+                        // Through UpdateCountdown rather than SetCountdown directly, so a
+                        // constant speed is defended by the same verify-and-retry as a fan
+                        // program. A dropped write here has the same consequence — the
+                        // firmware takes the fans when the countdown expires — and used to
+                        // be just as silent.
+                        op.Program.UpdateCountdown(true);
                     }
                 }
             }
