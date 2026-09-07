@@ -100,8 +100,12 @@ namespace OmenMon.AppGui {
                // The identifier obtained this way remains unique until user logout
                MessageId = RegisterMessage(Config.GuiMessageId);
 
-               // Load the custom TrueType font from resources
+               // Load the custom TrueType fonts from resources. Retrieve them by name
+               // (GdiFont.Get("Inter")), never by index — the collection does not
+               // preserve the order they were added in.
                GdiFont.Add(OmenMon.Resources.FigureFont);
+               GdiFont.Add(OmenMon.Resources.UiFont);
+               GdiFont.Add(OmenMon.Resources.UiFontSemiBold);
 
                // Set the state flag
                IsInitialized = true;

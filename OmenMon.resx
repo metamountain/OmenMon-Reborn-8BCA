@@ -81,6 +81,16 @@
         <value>Resources\IoMon.ttf;System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
     </data>
 
+    <!-- UI Font (Inter, SIL Open Font License 1.1 - see Resources\Inter-OFL.txt).
+         Shipped rather than assumed: Inter is not installed on a stock Windows, and a
+         font that silently falls back to Segoe is worse than one that is simply there. -->
+    <data name="UiFont" type="System.Resources.ResXFileRef, System.Windows.Forms">
+        <value>Resources\Inter-Regular.ttf;System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+    </data>
+    <data name="UiFontSemiBold" type="System.Resources.ResXFileRef, System.Windows.Forms">
+        <value>Resources\Inter-SemiBold.ttf;System.Byte[], mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value>
+    </data>
+
     <!-- Application Icon -->
     <data name="Icon" type="System.Resources.ResXFileRef, System.Windows.Forms">
         <value>Resources\Icon.ico;System.Drawing.Icon, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>

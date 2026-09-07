@@ -215,7 +215,7 @@ namespace OmenMon.AppGui {
 
             // Retrieve the custom font loaded from a resource
             this.TextFont = new Font(
-                GdiFont.Get(0),
+                GdiFont.Get("IoMon"),
                 (int) Math.Round(Config.GuiDynamicIconFontSizeRatio * Size.Width),
                 FontStyle.Regular,
                 GraphicsUnit.Pixel);

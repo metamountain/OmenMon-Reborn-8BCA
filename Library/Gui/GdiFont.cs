@@ -63,6 +63,35 @@ namespace OmenMon.Library {
 
         }
 
+        // Retrieves a font family by name.
+        //
+        // Prefer this over the index overload. PrivateFontCollection.Families is ordered
+        // by the collection, not by the order fonts were added, so every Get(0) in the
+        // program silently changes meaning the moment a second font is embedded — which
+        // is what adding Inter alongside the IoMon figure font would otherwise have done.
+        // Falls back rather than throwing: a missing font resource should degrade the
+        // typography, not take the window down during construction.
+        public static FontFamily Get(string name) {
+
+            foreach(FontFamily family in Data.Families)
+                if(family.Name == name)
+                    return family;
+
+            return Data.Families.Length > 0 ? Data.Families[0] : FontFamily.GenericSansSerif;
+
+        }
+
+        // Retrieves a font by family name, in points unless told otherwise
+        public static Font Get(
+            string name,
+            Single size,
+            FontStyle style = FontStyle.Regular,
+            GraphicsUnit unit = GraphicsUnit.Point) {
+
+            return new Font(Get(name), size, style, unit);
+
+        }
+
         // Retrieves a font for use
         public static Font Get(
             int index,

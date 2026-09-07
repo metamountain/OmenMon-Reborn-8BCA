@@ -106,9 +106,9 @@ namespace OmenMon.AppGui {
             this.HelpButtonClicked += EventActionHelp;
 
             this.FigureFont = new Font(
-                GdiFont.Get(0), Config.GuiFigureFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
-            Font heroFont = new Font(GdiFont.Get(0), GuiTheme.FontHero, FontStyle.Regular, GraphicsUnit.Pixel);
-            Font capFont  = new Font("Segoe UI", GuiTheme.FontBody, FontStyle.Regular, GraphicsUnit.Point);
+                GdiFont.Get("IoMon"), Config.GuiFigureFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
+            Font heroFont = GuiTheme.Ui(GuiTheme.FontDisplay);
+            Font capFont  = GuiTheme.Ui(GuiTheme.FontBody);
 
 #region Instantiation
             this.BarFan0Rte = new ProgressBarEx();
@@ -276,7 +276,8 @@ namespace OmenMon.AppGui {
             this.LblHdrTmp.Location = new Point(TMPX, HDR);
             this.LblHdrTmp.Size = new Size(W - PAD - TMPX, 16);
             this.LblHdrTmp.TextAlign = ContentAlignment.MiddleRight;
-            this.LblHdrTmp.Text = "°C";
+            // Follows the unit setting, because the values below no longer carry one
+            this.LblHdrTmp.Text = Config.TemperatureUseFahrenheit ? "°F" : "°C";
 
             int r0 = HDR + 18, r1 = r0 + 40;
             this.LblFan0Cap.Font = capFont; this.LblFan0Cap.ForeColor = cCap;
@@ -673,7 +674,7 @@ namespace OmenMon.AppGui {
             // ribbon. A fixed pitch gives the values a column to sit in and makes the
             // three lines scannable without changing a word of what they say.
             try {
-                this.RtfSysInfo.Font = new Font("Consolas", GuiTheme.FontMono, FontStyle.Regular, GraphicsUnit.Point);
+                this.RtfSysInfo.Font = new Font(GuiTheme.FaceMono, GuiTheme.FontCaption, FontStyle.Regular, GraphicsUnit.Point);
             } catch {
                 if(Config.GuiSysInfoFontSize > 0)
                     this.RtfSysInfo.Font = new Font(
@@ -703,7 +704,7 @@ namespace OmenMon.AppGui {
             this.Controls.Add(this.GrpKbd);
             this.Controls.Add(this.GrpSys);
 
-            try { this.Font = new Font("Segoe UI", GuiTheme.FontBody, FontStyle.Regular, GraphicsUnit.Point); } catch { }
+            try { this.Font = GuiTheme.Ui(GuiTheme.FontBody); } catch { }
             this.AutoScaleMode = AutoScaleMode.None;
             this.AutoSize = false;
             this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GAP);

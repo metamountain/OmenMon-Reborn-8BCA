@@ -70,7 +70,7 @@ namespace OmenMon.AppGui {
 
             LblHeader = new Label {
                 Text = "OmenMon Auto-Calibration Wizard",
-                Font = new Font("Segoe UI", 12F, FontStyle.Bold),
+                Font = GuiTheme.Ui(GuiTheme.FontBody, true),
                 AutoSize = true,
                 Location = new Point(12, 10)
             };
@@ -103,7 +103,7 @@ namespace OmenMon.AppGui {
                 Text = "Ready.",
                 Location = new Point(14, 176),
                 Size = new Size(534, 20),
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+                Font = GuiTheme.Ui(GuiTheme.FontBody, true)
             };
 
             PrgOverall = new ProgressBar {

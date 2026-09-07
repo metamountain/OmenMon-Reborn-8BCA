@@ -47,7 +47,7 @@ namespace OmenMon.AppGui {
             this.StartPosition = FormStartPosition.CenterParent;
             this.ClientSize = new Size(560, 420);
             this.BackColor = GuiTheme.Bg; this.ForeColor = GuiTheme.Text;
-            try { this.Font = new Font("Segoe UI", 9F); } catch { }
+            try { this.Font = GuiTheme.Ui(GuiTheme.FontBody); } catch { }
             this.Icon = OmenMon.Resources.Icon;
 
             cmbProg.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -132,7 +132,7 @@ namespace OmenMon.AppGui {
             var p = Plot;
 
             using(var axis = new Pen(GuiTheme.Border))
-            using(var f = new Font("Segoe UI", 7.5f))
+            using(var f = GuiTheme.Ui(GuiTheme.FontCaption))
             using(var br = new SolidBrush(GuiTheme.Muted)) {
                 for(int t = tMin; t <= tMax; t += 15) {
                     int x = ToScreen(t, lMin).X;

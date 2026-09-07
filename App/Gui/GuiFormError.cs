@@ -130,7 +130,7 @@ namespace OmenMon.AppGui {
             this.Controls.Add(this.BtnCopy);
             this.Controls.Add(this.BtnClose);
 
-            try { this.Font = new Font("Segoe UI", 9F); } catch { }
+            try { this.Font = GuiTheme.Ui(GuiTheme.FontBody); } catch { }
             this.AcceptButton = this.BtnClose;
             this.CancelButton = this.BtnClose;
             this.ClientSize = new Size(640, 322);

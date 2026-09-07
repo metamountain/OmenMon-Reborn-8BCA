@@ -1548,9 +1548,13 @@ namespace OmenMon.AppGui {
             if(cpu > 0 && cpu < 120) lastGoodCpuTemp = cpu; else cpu = lastGoodCpuTemp;
             if(gpu > 0 && gpu < 120) lastGoodGpuTemp = gpu; else gpu = lastGoodGpuTemp;
 
-            string u = Config.TemperatureUseFahrenheit ? "°F" : "°C";
-            this.LblTmp0Val.Text = cpu > 0 ? FmtTemp(cpu) + " " + u : "—";
-            this.LblTmp1Val.Text = gpu > 0 ? FmtTemp(gpu) + " " + u : "—";
+            // The unit lives in the column header (LblHdrTmp), exactly as "rpm" does for
+            // the column beside it. Repeating it on every value put three "°C" in one
+            // block — and it put the degree sign inside the display face, which is how it
+            // came out as a stray letter while IoMon, a figure font with no punctuation
+            // coverage, was still the face for these labels.
+            this.LblTmp0Val.Text = cpu > 0 ? FmtTemp(cpu).ToString() : "—";
+            this.LblTmp1Val.Text = gpu > 0 ? FmtTemp(gpu).ToString() : "—";
 
         }
 

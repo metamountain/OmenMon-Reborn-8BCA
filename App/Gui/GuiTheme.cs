@@ -10,6 +10,7 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
+using OmenMon.Library;
 
 namespace OmenMon.AppGui {
 
@@ -35,17 +36,36 @@ namespace OmenMon.AppGui {
         // sort out, and none of the ones removed were carrying meaning the others did
         // not already convey through position and colour.
         //
-        // Hero is in pixels because it uses the bundled IoMon face, a bitmap design that
-        // only looks right at exact pixel sizes.
-        // Four sizes, and a section heading that is clearly a heading.
-        // The sensor readout came down from 28 px: at that size the two rows dominated
-        // the window and the numbers read as the point of the program rather than as one
-        // of its six sections.
-        public const float FontHero    = 24F;   // px  - the CPU/GPU sensor readouts
-        public const float FontHeading = 10.5F; // pt  - section captions
-        public const float FontBody    = 9F;    // pt  - labels, buttons, section text
-        public const float FontSmall = 7.5F;  // pt  - graph axis ticks and legends
-        public const float FontMono  = 8.25F; // pt  - the system information strip
+        // Three sizes. Not four, not five — three.
+        //
+        // The window had five (24 px hero, 10.5, 9, 7.5, 8.25 pt) and mixed pixels with
+        // points, so half the type scaled with the system DPI and half did not. Every
+        // size is in points now, and hierarchy above body comes from *weight*, not from
+        // inventing a fourth size: Inter SemiBold at FontBody is a heading, Inter Regular
+        // at FontBody is text. That is the whole scale.
+        public const float FontDisplay = 18F;  // pt - the CPU/GPU sensor readouts
+        public const float FontBody    = 9F;   // pt - labels, buttons, headings, text
+        public const float FontCaption = 7.5F; // pt - column captions, axis ticks, legends
+
+        // Inter, shipped with the program (Resources\Inter-Regular.ttf, OFL 1.1). Named
+        // rather than indexed: PrivateFontCollection sorts its families, so GdiFont.Get(0)
+        // meant IoMon before Inter was added and would mean Inter afterwards.
+        public const string FaceUi     = "Inter";
+        public const string FaceUiBold = "Inter SemiBold";
+
+        // The system-information strip stays monospaced: it is a column of aligned
+        // key/value pairs, and Inter has no fixed-pitch figures reachable through GDI+.
+        public const string FaceMono   = "Consolas";
+
+        // One border weight everywhere. Buttons, spinners, text boxes, section rules and
+        // the window edge were previously set independently and drifted apart.
+        public const int BorderWidth = 1;
+
+        // The one way to ask for type. Every call site goes through here, so the three
+        // sizes above are the only three the window can render.
+        public static Font Ui(float size, bool bold = false) {
+            return GdiFont.Get(bold ? FaceUiBold : FaceUi, size);
+        }
 
         // Inner padding for section content, and for the caption and rule that head it.
         // Shared with the layout code: the caption and its hairline used to be drawn at
@@ -82,13 +102,13 @@ namespace OmenMon.AppGui {
                 case GroupBox g:
                     g.ForeColor = Muted;
                     g.BackColor = Bg;
-                    // One size up from body text, so a section caption is visibly a
-                    // heading rather than another label that happens to sit at the top.
+                    // A section caption is body size in SemiBold, not a fourth size.
+                    // Weight carries the hierarchy; adding 1.5 pt as well made the
+                    // captions read as a different scale from everything under them.
                     // Set here rather than per-section so all six cannot drift apart.
                     try {
-                        if(g.Font == null || Math.Abs(g.Font.SizeInPoints - FontHeading) > 0.01f)
-                            g.Font = new Font(g.Font != null ? g.Font.FontFamily.Name : "Segoe UI",
-                                FontHeading, FontStyle.Regular, GraphicsUnit.Point);
+                        if(g.Font == null || g.Font.FontFamily.Name != FaceUiBold)
+                            g.Font = Ui(FontBody, true);
                     } catch { }
                     // Replace the etched 3-D frame with a single hairline under the caption.
                     g.Paint -= PaintGroupBox;
