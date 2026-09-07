@@ -455,12 +455,24 @@ worth reading before inventing a safety mechanism here:
 
 ## Still open
 
-- **`ThermalPanicEnabled` is `false` in `OmenMon.xml`.** The threshold is 90 °C and the
-  hysteresis 5. On 2026-09-07 the CPU held **90-92 °C for about seventy seconds** during
-  a render with this switched off — the one mechanism that forces the fans regardless of
-  curve or tick rate. Nothing else in the program will cap that. Turning it on is a
-  config edit; it has not been made because it changes fan behaviour and that is the
-  user's call.
+- **`ThermalPanicEnabled` is `false`, and its 90 °C threshold is set too low for this
+  machine's actual workload.** This box does all-core 3ds Max renders, and a 7840HS in a
+  thin chassis sits at 90-92 °C throughout one — that is the part running at its power
+  limit against a saturated cooler, not a fault. Zen 4 mobile targets ~100 °C Tjmax.
+  Enabling panic at 90 would therefore fire on every render and pin the fans to maximum
+  as routine behaviour.
+
+  **Corrects an earlier note here**, which called the 2026-09-07 19:26 render a "critical
+  breakdown" and recommended enabling panic as-is. The render ran on the **Balanced**
+  preset — 45 W sustained — so 90-92 °C is what that power against that cooler produces.
+  The temperature was expected; only the *lateness* of the fan response was a defect. If
+  panic is wanted as a genuine last resort it belongs at 95-97 °C — above the normal
+  render peak, below Tjmax — and that is a decision, not a fix.
+
+  The useful work for this workload is therefore **not** a temperature cap but the
+  starvation item below: during that render the fan reached maximum only after the
+  temperature had already peaked, because the curve could not re-evaluate for 11-27 s at
+  a time.
 - **Monitor thread starves under sustained full load** — 2 telemetry samples in 15
   minutes observed. Thread priority is now `AboveNormal` and `TelemetryEvery` is 8
   (was 30). Measured after both: at 2026-09-06 21:22 the telemetry interval was still
