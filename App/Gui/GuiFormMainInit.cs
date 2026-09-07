@@ -223,19 +223,27 @@ namespace OmenMon.AppGui {
             // budgeted first and the graphs divide whatever is left. That keeps the
             // constraint true by construction: move a control and the graphs absorb it,
             // instead of the window silently growing past the screen again.
-            const int MAX_WINDOW_H = 960;
+            // 1080 on a 1112 px work area. 960 was set when the sections were smaller and
+            // left 32 px more headroom than the window needs; every pixel of it was coming
+            // out of the graphs, which are the only elastic thing here.
+            const int MAX_WINDOW_H = 1080;
 
             const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
             const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
 
-            // The keyboard picture, at the native aspect of Resources\Keyboard.png. It is
-            // drawn to the full content width, so its height follows from that and is not
-            // free to be chosen — which is why the section height below is derived from
-            // it rather than written down. H_KBD was the literal HDR + 190, correct for
-            // the old 52 px picture and 19 px short once the picture became 177, so the
-            // group box clipped the bottom of the keyboard.
-            const int KBD_IMG_W = 1200, KBD_IMG_H = 393;         // Resources\Keyboard.png
-            const int H_KBDPIC = (W - 2 * GuiTheme.Pad) * KBD_IMG_H / KBD_IMG_W;
+            // The keyboard picture's height, and the one knob for trading keyboard size
+            // against graph size — they come out of the same 1080 px.
+            //
+            // Filling the content width would make it 177 px tall (540 x 393 / 1200) and
+            // leave the two graphs on their 96 px floor, which is what "squeezed" was.
+            // At 120 the picture is still drawn 366 x 120 — more than five times the area
+            // of the 158 x 52 it started as, with each zone 90 px or wider — and the
+            // graphs get the 57 px back.
+            //
+            // The control keeps the full content width and Zoom centres the picture in
+            // it. The empty side bands are harmless now that GuiKbd.SetZone maps clicks
+            // against the drawn rectangle and ignores anything outside it.
+            const int H_KBDPIC = 120;
 
             // Picture at HDR + 32, then 8 px, the swatch row, the preset row and the hex
             // field (96 px in total), then the section's own bottom margin
@@ -376,9 +384,12 @@ namespace OmenMon.AppGui {
             this.BtnFanSet.HighlightRadius = 2;
             this.BtnFanSet.ForeColor = GuiTheme.Text;
             this.BtnFanSet.BackColor = GuiTheme.PanelHi;
-            this.BtnFanSet.Location = new Point(352, fa - 1);
-            this.BtnFanSet.Size = new Size(68, 26);
+            // Sized from its own text, like the preset buttons. 68 px was 7 px short of
+            // what "Apply" needs — in Segoe UI as well as Inter, so this predates the
+            // font change and was simply never measured.
             this.BtnFanSet.Text = "Apply";
+            this.BtnFanSet.Location = new Point(352, fa - 1);
+            this.BtnFanSet.Size = new Size(FitButton(this.BtnFanSet, 68), 26);
 
             this.LblFanCountdown.Font = capFont; this.LblFanCountdown.ForeColor = cCap;
             this.LblFanCountdown.Location = new Point(W - PAD - 30, fa + 3);
@@ -898,6 +909,19 @@ namespace OmenMon.AppGui {
                 BackColor = Color.Transparent
             };
             parent.Controls.Add(l);
+        }
+
+        // Width a button needs for its own label, never less than the layout asked for.
+        // Hardcoded widths are how "Apply" ended up 7 px short and the preset buttons
+        // read "Rena" and "Delet" — a width measured once against one font, in a window
+        // that has since changed font twice.
+        private int FitButton(Control b, int minimum) {
+            try {
+                return Math.Max(minimum,
+                    TextRenderer.MeasureText(b.Text, b.Font ?? this.Font).Width + 22);
+            } catch {
+                return minimum;
+            }
         }
 
         private void SetupRgbSlider(TrackBar t, Point at, int width) {

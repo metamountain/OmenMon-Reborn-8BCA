@@ -16,7 +16,13 @@ namespace OmenMon.AppGui {
 
     internal sealed class GuiChart : Control {
 
-        private const int N = 200;                  // history length (samples)
+        // History length, in samples. At the 2 s monitor tick 200 of these spanned about
+        // six and a half minutes across roughly 490 px of plot — under 2.5 px per sample,
+        // so a fan ramp or a thermal transient was a couple of pixels wide and the graph
+        // showed that something had happened without showing its shape. 100 halves the
+        // span to a little over three minutes and doubles the width of everything in it,
+        // which is the resolution the recent past actually needs.
+        private const int N = 100;                  // history length (samples)
         private const int TMin = 20, TMax = 100;    // left axis  °C
         private const int RMin = 0,  RMax = 6000;   // right axis rpm
 
@@ -152,8 +158,13 @@ namespace OmenMon.AppGui {
                 for(int k = 0; k <= 4; k++) {
                     int x = p.Left + k * p.Width / 4;
                     g.DrawLine(gridPen, x, p.Top, x, p.Bottom);
+                    // Minutes once there are minutes to show, seconds below that. The
+                    // integer division alone printed "-0m" for every tick under a minute,
+                    // which at a three-minute span is a quarter of the axis.
                     int agoSec = spanSec - k * spanSec / 4;
-                    string s = agoSec == 0 ? "now" : "-" + (agoSec / 60) + "m";
+                    string s = agoSec == 0 ? "now"
+                        : agoSec < 60 ? "-" + agoSec + "s"
+                        : "-" + (agoSec / 60) + "m" + (agoSec % 60 == 0 ? "" : (agoSec % 60).ToString("00"));
                     SizeF sz = g.MeasureString(s, fAx);
                     g.DrawString(s, fAx, brMuted, x - sz.Width / 2, p.Bottom + 3);
                 }
