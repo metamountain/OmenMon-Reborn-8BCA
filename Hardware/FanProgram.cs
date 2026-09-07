@@ -656,11 +656,25 @@ namespace OmenMon.Hardware.Platform {
             double seconds = (now - this.easeAt).TotalSeconds;
             this.easeAt = now;
 
-            // Never negative, and never so large after a long stall that the limit stops
-            // limiting: a gap of a minute should still wind down smoothly, not teleport
+            // Never negative, and — the part that was wrong — never so large after a long
+            // stall that the limit stops limiting.
+            //
+            // Measured 2026-09-07 20:07: the program tick sat blocked on HardwareLock for
+            // 106 s while the UI thread applied a profile change, so the next call arrived
+            // with seconds = 106, a budget of 53 levels, and the fan fell from 40 to 10 in
+            // one step — precisely the behaviour this method exists to prevent. Elapsed
+            // time is how fast the fan *may* wind down, not permission accumulated while
+            // nothing was running.
             if(seconds < 0) seconds = 0;
             int maxDrop = (int) Math.Ceiling(seconds * DescendLevelsPerSecond);
             if(maxDrop < 1) maxDrop = 1;
+            if(maxDrop > MaxDescendPerUpdate) {
+                if(seconds > StallSeconds)
+                    Config.ErrorLog("FanProgram.EaseDown", null,
+                        "resumed after " + (int) seconds + " s without a pass; limiting the"
+                            + " wind-down to " + MaxDescendPerUpdate + " levels for this one");
+                maxDrop = MaxDescendPerUpdate;
+            }
 
             for(int i = 0; i < fans.Length && i < this.easeLevel.Length; i++) {
 
@@ -681,6 +695,15 @@ namespace OmenMon.Hardware.Platform {
         // a little over a minute, which is about what the firmware's own wind-down sounds
         // like and slow enough that no single step is audible as a step.
         private const double DescendLevelsPerSecond = 0.5;
+
+        // The most a single pass may take off, whatever the clock says. Three levels is
+        // 300 rpm — a step small enough not to be heard as one — so a fan sitting at
+        // maximum after a stall still walks down instead of dropping.
+        private const int MaxDescendPerUpdate = 3;
+
+        // A gap longer than this means something blocked the control loop rather than the
+        // tick simply being late, and is worth a line in the log
+        private const double StallSeconds = 10;
 
         // Last level actually commanded per fan, and when — the state EaseDown works from
         private readonly int[] easeLevel = new int[PlatformData.FanCount];
