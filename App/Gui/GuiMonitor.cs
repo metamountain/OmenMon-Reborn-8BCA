@@ -162,7 +162,24 @@ namespace OmenMon.AppGui {
             this.Running = true;
             this.Worker = new Thread(Loop) {
                 IsBackground = true,
-                Name = "OmenMonMonitor"
+                Name = "OmenMonMonitor",
+
+                // Above normal, because this thread re-arms a hardware watchdog.
+                //
+                // The BIOS countdown at EC 0x63 hands the fans back to the firmware if it
+                // is not refreshed, so this loop missing its slot is not a dropped sample
+                // — it is a loss of fan control. Under a full CPU load, EC operations slow
+                // sharply (Ec.cs backs off with Thread.Sleep(0) yields, which against a
+                // machine full of CPU-bound processes take far longer in wall time), and a
+                // pass that should take milliseconds can take seconds. Measured: with 16
+                // busy processes the countdown lapsed and the firmware took the fans at
+                // 78 °C.
+                //
+                // The thread sleeps almost all the time, so the priority costs nothing;
+                // it only ensures the few milliseconds of work per second actually happen
+                // when the machine is busy. Same reasoning as the thermal-panic check
+                // living on this thread.
+                Priority = ThreadPriority.AboveNormal
             };
             this.Worker.Start();
         }
@@ -328,6 +345,34 @@ namespace OmenMon.AppGui {
                 s.Max = plat.Fans.GetMax();
                 s.Off = plat.Fans.GetOff();
 
+                // Bridge EC dropouts before anything downstream sees them.
+                //
+                // Three HP processes on this machine take Global\Access_EC —
+                // HPSystemEventUtilityHost, OmenCap, HPSystemEventUtilityBackground — and
+                // a pass that loses the race returns 0 for everything in it rather than
+                // failing. Measured at idle: rpm held a steady 1500 while the level column
+                // read 0 on most ticks, with the countdown and power fields blinking to 0
+                // in the same rows. Nothing was wrong with the fans; the reads simply did
+                // not happen.
+                //
+                // The telemetry CSV already bridged this for rpm (LogSane) — but only for
+                // the CSV, so the window and the tray still showed the raw zero, which
+                // the fan-speed readout rendered as "auto". Bridging here fixes all three
+                // at once, and the CSV's own bridge becomes a second line rather than the
+                // only one.
+                //
+                // Guarded on s.Off: when the fans really have been switched off, zero is
+                // the truth and must show.
+                MonitorSnapshot last = this.CurrentSnapshot;
+                if(last != null && last.HasFanSys && !s.Off) {
+                    for(int i = 0; i < PlatformData.FanCount; i++) {
+                        if(s.FanSpeed[i] == 0 && last.FanSpeed[i] > 0) s.FanSpeed[i] = last.FanSpeed[i];
+                        if(s.FanLevel[i] == 0 && last.FanLevel[i] > 0) s.FanLevel[i] = last.FanLevel[i];
+                        if(s.FanRate[i]  == 0 && last.FanRate[i]  > 0) s.FanRate[i]  = last.FanRate[i];
+                    }
+                    if(s.Countdown == 0 && last.Countdown > 0) s.Countdown = last.Countdown;
+                }
+
                 ISettings sys = plat.System;
                 s.Manufacturer = sys.GetManufacturer();
                 s.Product      = sys.GetProduct();
@@ -404,8 +449,18 @@ namespace OmenMon.AppGui {
         // Last plausible logged values, used to bridge sensor dropouts in the CSV
         private int logCpuT, logGpuT, logMaxT, logCpuR, logGpuR;
 
-        // Background telemetry cadence, in monitor loop iterations (~1 s each)
-        private const int TelemetryEvery = 30;
+        // Background telemetry cadence, in monitor loop iterations (~1 s each).
+        //
+        // 30 was too coarse to record what the machine does. Measured: the GPU shed 35 °C
+        // in the minute after a load stopped, and the log caught it in a single row —
+        // 74 °C, then 39 °C, with nothing between. The reading was correct at both ends
+        // and the fall was real, but a history that samples twice across a whole thermal
+        // transient cannot show a curve, only a cliff, and cannot be used to judge how
+        // the fans responded either.
+        //
+        // 8 s costs one CSV line every eight seconds — nothing, next to a log that
+        // rotates at 4 MB — and is fine enough that a cooldown reads as a slope.
+        private const int TelemetryEvery = 8;
         private int TelemetryTick;
 
 
