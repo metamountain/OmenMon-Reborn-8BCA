@@ -874,11 +874,10 @@ namespace OmenMon.AppGui {
             BiosData.KbdZone picked = Kbd.SetZone(e.X, e.Y);
             this.ColorPicker.Title = Config.Locale.Get(Config.L_GUI_MAIN + "KbdColorPick" + picked.ToString());
 
-            // Reflect the clicked zone in the selector + sliders (guard the change echo)
+            // Reflect the clicked zone in the selector
             try {
-                kbdRgbSyncing = true;
                 this.CmbKbdZone.SelectedIndex = ComboIndexForZone(picked);
-            } catch { } finally { kbdRgbSyncing = false; }
+            } catch { }
             SyncKbdRgb();
 
             // Set the start color to the current color
@@ -1365,8 +1364,6 @@ namespace OmenMon.AppGui {
 
             }
 
-            bool on = Kbd != null && Kbd.GetBacklight();
-            this.TrkKbdR.Enabled = this.TrkKbdG.Enabled = this.TrkKbdB.Enabled = on;
             SyncKbdRgb();
 
         }
@@ -1374,8 +1371,6 @@ namespace OmenMon.AppGui {
         // Last plausible temperature readings, used to bridge sensor dropouts
         private int lastGoodCpuTemp, lastGoodGpuTemp;
 
-        // Reentrancy guard for the R/G/B sliders and the zone selector
-        private bool kbdRgbSyncing;
 
         // CmbKbdZone item order <-> BiosData.KbdZone (enum: Right=0, Middle=1, Left=2, Wasd=3)
         private static readonly BiosData.KbdZone[] KbdZoneByCombo = {
@@ -1402,39 +1397,16 @@ namespace OmenMon.AppGui {
             SyncKbdRgb();
         }
 
-        // R/G/B sliders -> whole keyboard (uniform) or the selected zone
-        private void EventKbdRgbScroll(object sender, EventArgs e) {
-            if(kbdRgbSyncing || Kbd == null || !Kbd.GetBacklight())
-                return;
-            Color c = Color.FromArgb(this.TrkKbdR.Value, this.TrkKbdG.Value, this.TrkKbdB.Value);
-            int zi = this.CmbKbdZone.SelectedIndex;
-            if(zi <= 0) {
-                Kbd.SetColors(c.ToArgb());                    // All zones (uniform)
-            } else {
-                Kbd.SetColor(KbdZoneByCombo[zi], c.ToArgb()); // target the picked zone directly
-            }
-            this.PnlKbdSwatch.BackColor = c;
-            this.TxtKbdColorVal.Text = Kbd.GetParam();
-            try { this.CmbKbdColorPreset.SelectedValue = Kbd.GetPreset(); } catch { }
-        }
-
-        // Push the current colour into the sliders + swatch without echoing events.
-        // In "All" mode the Right zone's colour represents the (uniform) keyboard.
+        // Push the selected zone.s colour into the swatch.
+        // In "All" mode the Right zone.s colour represents the (uniform) keyboard.
         private void SyncKbdRgb() {
             if(Kbd == null)
                 return;
             try {
-                kbdRgbSyncing = true;
                 int zi = this.CmbKbdZone.SelectedIndex;
-                Color c = Color.FromArgb(Kbd.GetColor(
+                this.PnlKbdSwatch.BackColor = Color.FromArgb(Kbd.GetColor(
                     zi <= 0 ? BiosData.KbdZone.Right : KbdZoneByCombo[zi]));
-                this.TrkKbdR.Value = c.R;
-                this.TrkKbdG.Value = c.G;
-                this.TrkKbdB.Value = c.B;
-                this.PnlKbdSwatch.BackColor = c;
-            } catch { } finally {
-                kbdRgbSyncing = false;
-            }
+            } catch { }
         }
 
         // Keeps updating the color as it changes in the Color Picker dialog

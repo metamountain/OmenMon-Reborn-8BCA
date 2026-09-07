@@ -68,7 +68,6 @@ namespace OmenMon.AppGui {
         private Label LblFanUnitVal;
         private Label LblHdrRpm;
         private Label LblHdrTmp;
-        private Label LblKbdR, LblKbdG, LblKbdB;
         private Label LblTmp0Cap, LblTmp0Val;
         private Label LblTmp1Cap, LblTmp1Val;
         private Label LblTmp2Cap, LblTmp2Val;
@@ -93,7 +92,6 @@ namespace OmenMon.AppGui {
         private ToolTip Tip;
         private TrackBar TrkFan0Lvl;
         private TrackBar TrkFan1Lvl;
-        internal TrackBar TrkKbdR, TrkKbdG, TrkKbdB;
 #endregion
 
 #region Initialization
@@ -156,7 +154,6 @@ namespace OmenMon.AppGui {
             this.LblFanUnitVal = new Label();
             this.LblHdrRpm = new Label();
             this.LblHdrTmp = new Label();
-            this.LblKbdR = new Label(); this.LblKbdG = new Label(); this.LblKbdB = new Label();
             this.LblTmp0Cap = new Label(); this.LblTmp0Val = new Label();
             this.LblTmp1Cap = new Label(); this.LblTmp1Val = new Label();
             this.LblTmp2Cap = new Label(); this.LblTmp2Val = new Label();
@@ -178,7 +175,6 @@ namespace OmenMon.AppGui {
             this.Tip = new ToolTip(this.Components);
             this.TrkFan0Lvl = new TrackBar();
             this.TrkFan1Lvl = new TrackBar();
-            this.TrkKbdR = new TrackBar(); this.TrkKbdG = new TrackBar(); this.TrkKbdB = new TrackBar();
             this.TxtKbdColorVal = new TextBox();
 #endregion
 
@@ -192,9 +188,6 @@ namespace OmenMon.AppGui {
             ((System.ComponentModel.ISupportInitialize) this.PicKbd).BeginInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan0Lvl).BeginInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan1Lvl).BeginInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdR).BeginInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdG).BeginInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdB).BeginInit();
 
             const int W = 560;                 // section content width
             // Sections span the full client width, so the only horizontal margin in the
@@ -213,7 +206,6 @@ namespace OmenMon.AppGui {
             const int GUT  = 8;                     // the single gutter between controls
             const int LBLW = 56;                    // caption column ("Profile", "CPU", ...)
             const int COL2 = PAD + LBLW + GUT;      // where a caption's control starts
-            const int CONT = W - 2 * PAD;           // full content width inside a section
 
             // The sensor block is two right-aligned number columns: rpm, then °C on the
             // right edge. Both the unit caption and the value below it use the same box,
@@ -549,33 +541,37 @@ namespace OmenMon.AppGui {
             this.CmbKbdZone.SelectedIndex = 0;
             this.CmbKbdZone.SelectedIndexChanged += EventKbdZoneSelect;
 
+            // The keyboard is the control, so it gets the room.
+            //
+            // It was 540 x 52 with SizeMode.Zoom against a 1200 x 393 image. Zoom fits by
+            // the constraining axis, which was the height, so the picture was drawn only
+            // 158 px wide and centred — about 191 to 349 — with the rest of the control
+            // empty. Every click that landed on the visible keyboard therefore fell
+            // between 35% and 64% of the *control* width, and GuiKbd.SetZone, which
+            // divided by that width, answered "Middle" every single time. Only the middle
+            // zone could be selected, and it was the geometry, not the hit test.
+            //
+            // At the image's own aspect ratio the picture now fills the width exactly, so
+            // there is no letterboxing left to mis-map, and each zone is a large target.
+            int kbdH = W - 2 * PAD;
+            try {
+                Image ki = OmenMon.Resources.Keyboard;
+                if(ki != null && ki.Width > 0)
+                    kbdH = (int) Math.Round((double) (W - 2 * PAD) * ki.Height / ki.Width);
+            } catch { }
+
             this.PicKbd.Location = new Point(PAD, HDR + 32);
-            this.PicKbd.Size = new Size(W - 2 * PAD, 52);
+            this.PicKbd.Size = new Size(W - 2 * PAD, kbdH);
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
-            // Three equal columns filling the width, with the swatch on the right edge.
-            // The old fixed positions (labels at 16/138/258, 96 px sliders) left 148 px
-            // of dead space between the blue slider and the swatch, and the three column
-            // starts were 122 and 120 apart — close enough to look like a mistake rather
-            // than a rhythm.
-            int ry = HDR + 92;
-            const int SWW = 24;                                   // colour swatch
-            const int RGBW = CONT - SWW - GUT;                    // room for the three
-            const int RGBCOL = (RGBW - 2 * GUT) / 3;              // one column
-            const int RGBLBL = 16;                                // "R" / "G" / "B"
-            const int RGBTRK = RGBCOL - RGBLBL - 4;               // the slider itself
-
-            Action<Label, TrackBar, string, int> mkRgb = (lbl, trk, name, col) => {
-                int x = PAD + col * (RGBCOL + GUT);
-                lbl.Text = name; lbl.Font = capFont; lbl.ForeColor = cCap;
-                lbl.Location = new Point(x, ry + 4);
-                lbl.Size = new Size(RGBLBL, 20);
-                SetupRgbSlider(trk, new Point(x + RGBLBL + 4, ry), RGBTRK);
-            };
-            mkRgb(this.LblKbdR, this.TrkKbdR, "R", 0);
-            mkRgb(this.LblKbdG, this.TrkKbdG, "G", 1);
-            mkRgb(this.LblKbdB, this.TrkKbdB, "B", 2);
+            // The R/G/B sliders are gone. Picking a colour by dragging three sliders is
+            // worse than the colour dialog the swatch already opens, and they cost the
+            // vertical room the keyboard needed to be clickable at all. The swatch shows
+            // the selected zone's colour and opens the picker; the hex field below still
+            // takes a typed value.
+            int ry = HDR + 40 + kbdH;
+            const int SWW = 24;
 
             this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry + 3);
             this.PnlKbdSwatch.Size = new Size(SWW, 24);
@@ -615,12 +611,6 @@ namespace OmenMon.AppGui {
             this.GrpKbd.Controls.Add(this.ChkKbdBacklight);
             this.GrpKbd.Controls.Add(this.CmbKbdZone);
             this.GrpKbd.Controls.Add(this.PicKbd);
-            this.GrpKbd.Controls.Add(this.LblKbdR);
-            this.GrpKbd.Controls.Add(this.LblKbdG);
-            this.GrpKbd.Controls.Add(this.LblKbdB);
-            this.GrpKbd.Controls.Add(this.TrkKbdR);
-            this.GrpKbd.Controls.Add(this.TrkKbdG);
-            this.GrpKbd.Controls.Add(this.TrkKbdB);
             this.GrpKbd.Controls.Add(this.PnlKbdSwatch);
             this.GrpKbd.Controls.Add(this.CmbKbdColorPreset);
             this.GrpKbd.Controls.Add(this.BtnKbdColorPresetSet);
@@ -755,9 +745,6 @@ namespace OmenMon.AppGui {
             this.Tip.SetToolTip(this.ChkKbdBacklight, "Toggle the keyboard backlight on or off.");
             this.Tip.SetToolTip(this.CmbKbdZone, "Choose which zone the R/G/B sliders change. 'All zones' sets the whole keyboard to one uniform colour.");
             this.Tip.SetToolTip(this.PicKbd, "Click a zone to edit it (and pick its colour in the full dialog). Zones are separated by the grooves.");
-            this.Tip.SetToolTip(this.TrkKbdR, "Red channel of the selected keyboard zone (0–255).");
-            this.Tip.SetToolTip(this.TrkKbdG, "Green channel of the selected keyboard zone (0–255).");
-            this.Tip.SetToolTip(this.TrkKbdB, "Blue channel of the selected keyboard zone (0–255).");
             this.Tip.SetToolTip(this.PnlKbdSwatch, "Live preview of the selected zone's colour.");
             this.Tip.SetToolTip(this.CmbKbdColorPreset, "Load a saved keyboard colour preset.");
             this.Tip.SetToolTip(this.BtnKbdColorPresetSet, "Save the current colours as a new preset.");
@@ -769,9 +756,6 @@ namespace OmenMon.AppGui {
             ((System.ComponentModel.ISupportInitialize) this.PicKbd).EndInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan0Lvl).EndInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan1Lvl).EndInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdR).EndInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdG).EndInit();
-            ((System.ComponentModel.ISupportInitialize) this.TrkKbdB).EndInit();
 
             this.GrpChart.ResumeLayout(false);
             this.GrpPwr.ResumeLayout(false);
@@ -782,9 +766,6 @@ namespace OmenMon.AppGui {
             this.ResumeLayout(false);
             this.GrpKbd.PerformLayout();
 
-            this.TrkKbdR.Scroll += EventKbdRgbScroll;
-            this.TrkKbdG.Scroll += EventKbdRgbScroll;
-            this.TrkKbdB.Scroll += EventKbdRgbScroll;
 
             // Control Names — some handlers (EventFanRdoChanged, UpdateFanCtl) and the
             // old lookups identify controls by Name, so restore the originals.

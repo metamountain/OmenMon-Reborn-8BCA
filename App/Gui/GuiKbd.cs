@@ -156,11 +156,53 @@ namespace OmenMon.AppGui {
             this.Zone = zone;
         }
 
+        // Where PictureBox.SizeMode.Zoom actually draws the picture inside the control:
+        // scaled by whichever axis binds first, and centred in the other. WinForms does
+        // not expose this, so it is recomputed the same way the control does it.
+        private Rectangle GetImageBounds() {
+
+            PictureBox box = this.Context.FormMain.PicKbd;
+            if(box == null || box.Image == null
+                || box.Width <= 0 || box.Height <= 0
+                || box.Image.Width <= 0 || box.Image.Height <= 0)
+                return Rectangle.Empty;
+
+            double scale = Math.Min(
+                (double) box.Width / box.Image.Width,
+                (double) box.Height / box.Image.Height);
+
+            int w = (int) Math.Round(box.Image.Width * scale);
+            int h = (int) Math.Round(box.Image.Height * scale);
+
+            return new Rectangle((box.Width - w) / 2, (box.Height - h) / 2, w, h);
+
+        }
+
         // Sets the zone given the co-ordinates
         public BiosData.KbdZone SetZone(int x, int y) {
 
+            // Map against the drawn image, not the control.
+            //
+            // PicKbd is SizeMode.Zoom, so the picture is scaled to fit inside the control
+            // and centred, and unless the two happen to share an aspect ratio there are
+            // empty bands on one axis. Dividing by the control's own width therefore
+            // answers the wrong question. It used to be badly wrong: a 1200 x 393 image in
+            // a 540 x 52 control was drawn 158 px wide, so every click that actually
+            // landed on the keyboard fell between 35% and 64% of the control and this
+            // method returned Middle for all four zones.
+            Rectangle r = GetImageBounds();
+            if(r.Width <= 0 || r.Height <= 0)
+                return this.Zone;
+
+            // Outside the picture itself: leave the selection alone rather than guessing
+            if(x < r.Left || x >= r.Right || y < r.Top || y >= r.Bottom)
+                return this.Zone;
+
+            x -= r.Left;
+            y -= r.Top;
+
             // Calculate the relative horizontal co-ordinate
-            int rx = 100 * x / this.Context.FormMain.PicKbd.Width;
+            int rx = 100 * x / r.Width;
 
             if(rx > 72)
 
@@ -176,7 +218,7 @@ namespace OmenMon.AppGui {
 
                 // Calculate the relative vertical co-ordinate
                 // only when it's necessary to do so
-                int ry = 100 * y / this.Context.FormMain.PicKbd.Height;
+                int ry = 100 * y / r.Height;
 
                 if(ry > 66 || ry < 31)
 
