@@ -25,6 +25,7 @@ namespace OmenMon.AppGui {
         private Button BtnProfAdd;            // new profile
         private Button BtnProfDel;            // delete profile (not the 3 standard ones)
         private Button BtnMenu;               // shows the tray menu (right-click no longer does)
+        private Button BtnUpdate;             // update check, reporting state in its own label
         private CheckBox ChkAutoStart;        // start OmenMon with Windows
         private Button BtnKbdColorPresetDel;
         private Button BtnKbdColorPresetRen;
@@ -61,6 +62,9 @@ namespace OmenMon.AppGui {
         // Shown while one of the three reference curves is selected
         private const string LockedHelpText =
             "Reference curve - read-only. Press + to make an editable copy.";
+
+        // Longest of the button's states, so its width is fixed once at startup
+        private const string UpdateTextIdle = "Check for updates";
 
         private const string CurveHelpText =
             "Left-click to add a point · drag to move · right-click to remove";
@@ -116,6 +120,7 @@ namespace OmenMon.AppGui {
             this.BtnProfAdd = new Button();
             this.BtnProfDel = new Button();
             this.BtnMenu = new Button();
+            this.BtnUpdate = new Button();
             this.BtnKbdColorPresetDel = new Button();
             this.BtnKbdColorPresetRen = new Button();
             this.BtnKbdColorPresetSet = new Button();
@@ -660,6 +665,20 @@ namespace OmenMon.AppGui {
             this.BtnMenu.Size = new Size(90, 27);
             this.BtnMenu.Click += (s, e) => Application.Exit();
 
+            // The update button says what it is doing in its own label rather than
+            // needing a status line beside it: "Check for updates" -> "Checking..." ->
+            // "Up to date" or "Downloading..." -> "Install vX.Y.Z". Sized once for the
+            // longest of those so the row does not reflow as the state changes.
+            this.BtnUpdate.Text = UpdateTextIdle;
+            this.BtnUpdate.FlatStyle = FlatStyle.Flat;
+            this.BtnUpdate.BackColor = GuiTheme.PanelHi;
+            this.BtnUpdate.ForeColor = GuiTheme.Text;
+            this.BtnUpdate.FlatAppearance.BorderColor = GuiTheme.Border;
+            this.BtnUpdate.Size = new Size(FitButton(this.BtnUpdate, 130), 27);
+            this.BtnUpdate.Location = new Point(
+                W - PAD - 90 - GUT - this.BtnUpdate.Width, HDR - 3);
+            this.BtnUpdate.Click += EventUpdateClick;
+
             this.RtfSysInfo.BorderStyle = BorderStyle.None;
             this.RtfSysInfo.Cursor = Cursors.IBeam;
             this.RtfSysInfo.DetectUrls = false;
@@ -694,6 +713,7 @@ namespace OmenMon.AppGui {
             }
             this.GrpSys.Controls.Add(this.ChkAutoStart);
             this.GrpSys.Controls.Add(this.BtnMenu);
+            this.GrpSys.Controls.Add(this.BtnUpdate);
             this.GrpSys.Controls.Add(this.RtfSysInfo);
             this.GrpSys.Size = new Size(W, H_SYS);
             this.GrpSys.TabStop = false;

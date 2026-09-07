@@ -132,6 +132,7 @@
     <Compile Include="Library\EcTrace.cs" />
     <Compile Include="Library\TelemetryLog.cs" />
     <Compile Include="Library\UserPrefs.cs" />
+    <Compile Include="Library\Update.cs" />
     <Compile Include="Library\PowerGuard.cs" />
     <Compile Include="Library\Gui\ButtonEx.cs">
       <SubType>Component</SubType>
@@ -156,6 +157,8 @@
     <Reference Include="Microsoft.Management.Infrastructure" />
     <Reference Include="System" />
     <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
   </ItemGroup>

@@ -7,10 +7,14 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using System.Threading;
 using OmenMon.External;
 using OmenMon.Hardware.Bios;
 using OmenMon.Hardware.Platform;
 using OmenMon.Library;
+
+// Form inherits Control.Update(), which hides the type name
+using UpdateCheck = OmenMon.Library.Update;
 
 namespace OmenMon.AppGui {
 
@@ -1406,6 +1410,101 @@ namespace OmenMon.AppGui {
             if(!KbdUniform)
                 Kbd.SetZone(KbdZoneByCombo[this.CmbKbdZone.SelectedIndex]);
             SyncKbdRgb();
+        }
+
+        // Update check. The button is the whole interface: it reports what it is doing in
+        // its own label, and a second click on a downloaded release installs it.
+        //
+        // Nothing is installed without two deliberate clicks, and what gets installed is
+        // OmenMon.exe alone - see Library/Update.cs. OmenMon.xml carries the user's fan
+        // curves and keyboard presets in the same file as the shipped defaults, so an
+        // update that replaced it would delete work with no way back.
+        private UpdateCheck.Info updateFound;
+        private string updateArchive;
+        private bool updateBusy;
+
+        private void EventUpdateClick(object sender, EventArgs e) {
+
+            if(this.updateBusy)
+                return;
+
+            // Second click, with a release already downloaded: install and restart
+            if(this.updateArchive != null) {
+                string installError;
+                if(UpdateCheck.Install(this.updateArchive, out installError)) {
+                    Application.Exit();
+                } else {
+                    this.BtnUpdate.Text = "Install failed";
+                    Config.ErrorLog("Update.Install", null, installError);
+                }
+                return;
+            }
+
+            this.updateBusy = true;
+            this.BtnUpdate.Enabled = false;
+            this.BtnUpdate.Text = "Checking...";
+
+            // Off the UI thread: this is a network round trip, and neither the interface
+            // nor the monitor thread should be waiting behind a socket
+            ThreadPool.QueueUserWorkItem(delegate {
+
+                UpdateCheck.Info info = UpdateCheck.Check();
+
+                string archive = null, downloadError = null;
+                if(info.Ok && info.IsNewer)
+                    archive = UpdateCheck.Download(info, out downloadError);
+
+                try {
+                    this.BeginInvoke((MethodInvoker) delegate {
+                        UpdateFinished(info, archive, downloadError);
+                    });
+                } catch { }
+
+            });
+
+        }
+
+        private void UpdateFinished(UpdateCheck.Info info, string archive, string downloadError) {
+
+            this.updateBusy = false;
+            this.BtnUpdate.Enabled = true;
+            this.updateFound = info;
+            this.updateArchive = archive;
+
+            if(!info.Ok) {
+                this.BtnUpdate.Text = "Check failed";
+                this.Tip.SetToolTip(this.BtnUpdate,
+                    "Could not reach the release feed: " + info.Error
+                        + "\nThe installed version is unchanged.");
+                return;
+            }
+
+            if(!info.IsNewer) {
+                this.BtnUpdate.Text = "Up to date";
+                this.Tip.SetToolTip(this.BtnUpdate,
+                    "Version " + UpdateCheck.Current + " is current"
+                        + (info.Tag != null ? " (latest release " + info.Tag + ")." : "."));
+                return;
+            }
+
+            if(archive == null) {
+                this.BtnUpdate.Text = "Download failed";
+                this.Tip.SetToolTip(this.BtnUpdate,
+                    "Found " + info.Tag + " but could not download it: " + downloadError);
+                return;
+            }
+
+            this.BtnUpdate.Text = "Install " + info.Tag;
+            this.Tip.SetToolTip(this.BtnUpdate,
+                "Downloaded " + info.Tag + ". Click to replace OmenMon.exe and restart."
+                    + "\n\nYour fan curves, keyboard presets and settings are not touched -"
+                    + "\nonly OmenMon.exe is replaced, and the outgoing one is kept beside"
+                    + "\nit as OmenMon.exe.prev."
+                    + "\n\nNote this is an UPSTREAM release. It will not contain the"
+                    + "\nboard-specific work in this build - the EC fan watchdog, the NVML"
+                    + "\nsession rebuild, the die temperature over SMN. Installing it"
+                    + "\ntrades those for whatever upstream has added since v1.4.12.");
+
         }
 
         // Where to open the colour picker: docked to the side of this window, top-aligned
