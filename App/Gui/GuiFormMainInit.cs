@@ -63,7 +63,7 @@ namespace OmenMon.AppGui {
         private const string UpdateTextIdle = "Check for updates";
 
         private const string CurveHelpText =
-            "Click to add · drag to move · right-click removes";
+            "Drag a point · right-click removes";
         private Label LblFanUnitRte;
         private Label LblFanUnitVal;
         private Label LblHdrRpm;

@@ -449,7 +449,7 @@ namespace OmenMon.AppGui {
         private string pwrWinMode, pwrCharacter;
         private byte pwrPl1, pwrPl2, pwrPl4;
         private bool pwrWinOk, pwrShown;
-        private int pwrGpuTick;
+        private int pwrGpuTick, pwrGpuWatts;
 
         // The GPU limit is a live value, and the panel was showing it as a fixed one.
         //
@@ -481,10 +481,20 @@ namespace OmenMon.AppGui {
             // flags, and it is labelled with what sets it: the fan profile, not the mode
             // selected here. Those are genuinely different controls and showing them in
             // one block without saying so would imply the buttons above change both.
+            // Hold the last figure that was actually read.
+            //
+            // Re-reading it live was right — the limit moves with Dynamic Boost — but a
+            // parked GPU fails the NVML liveness check, so the honest "unavailable"
+            // replaced a perfectly good number every time the machine went idle, which is
+            // most of the time. The limit is a configured ceiling rather than a
+            // measurement: the last one read is still true while the GPU sleeps.
             int gpuW;
-            string gpuLine = OmenMon.Driver.Nvml.TryGetGpuPowerLimit(out gpuW)
-                ? string.Format("GPU limit: {0} W — set by the fan profile", gpuW)
-                : "GPU limit: unavailable (NVML)";
+            if(OmenMon.Driver.Nvml.TryGetGpuPowerLimit(out gpuW))
+                this.pwrGpuWatts = gpuW;
+
+            string gpuLine = this.pwrGpuWatts > 0
+                ? string.Format("GPU limit: {0} W — set by the fan profile", this.pwrGpuWatts)
+                : "GPU limit: not read yet";
 
             this.LblPwrHint.Text = string.Format(
                 "Windows power mode: {0}{1}\nCPU limits: {2} W sustained · {3} W boost · {4} W peak\n{5}\n{6}",
@@ -1562,6 +1572,19 @@ namespace OmenMon.AppGui {
 
         }
 
+        // A zone colour as an opaque Color.
+        //
+        // GuiKbd stores zone colours as 24-bit values — BiosData.RgbColor.ValueReverse is
+        // Blue | Green << 8 | Red << 16 — so the alpha byte is zero. Color.FromArgb(int)
+        // reads that as ARGB and hands back a fully transparent colour: correct in R, G
+        // and B, invisible when used as a BackColor. That is why the swatch beside the
+        // eyedropper rendered white while the picker and the R/G/B boxes, which read the
+        // components and ignore alpha, showed the right colour.
+        private static Color OpaqueZone(int zoneColor) {
+            Color c = Color.FromArgb(zoneColor);
+            return Color.FromArgb(255, c.R, c.G, c.B);
+        }
+
         // Inline colour picker — square + hue strip, R/G/B boxes, swatch, eyedropper.
         // Applies live to the selected zone, exactly as the modal dialog's real-time
         // preview did, but without covering the keyboard picture it is colouring.
@@ -1626,7 +1649,7 @@ namespace OmenMon.AppGui {
             try {
                 this.kbdColorSyncing = true;
                 int zi = this.CmbKbdZone.SelectedIndex;
-                Color c = Color.FromArgb(Kbd.GetColor(
+                Color c = OpaqueZone(Kbd.GetColor(
                     zi <= 0 ? BiosData.KbdZone.Right : KbdZoneByCombo[zi]));
                 this.PnlKbdSwatch.BackColor = c;
                 this.KbdPicker.Color = c;
