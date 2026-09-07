@@ -520,7 +520,7 @@ namespace OmenMon.Library {
             // HP OMEN 16-xf series (8BCA) — HP recycles this ProductId across CPU/
             // regional variants with conflicting EC layouts (upstream #76/#85 deferred
             // for exactly this). The canonical 0xB0/0xB2 LE16 tachometers (#114,
-            // @tapsyin) do NOT exist on the 16-xf0079ng / AMD Ryzen 9 / BIOS F.31
+            // @tapsyin) do NOT exist on the 16-xf0079ng / AMD Ryzen 7 7840HS / BIOS F.31
             // variant: EC[0xB0..0xB1] reads 0x005C (92) and EC[0xB2..0xB3] 0x0000
             // regardless of fan load — not a tachometer. On that firmware HP's legacy
             // ACPI thermal-profile WMI methods (GTPS/RDCF/WHCM/WMAA) are absent

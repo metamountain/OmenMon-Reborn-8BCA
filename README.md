@@ -22,7 +22,7 @@ Silent, Default and Performance are complete power states, not just three fan sp
 |---|---|
 | Model | HP OMEN Gaming Laptop **16-xf0079ng** (product **84S07EA**) |
 | Motherboard | **`8BCA`** |
-| CPU | AMD Ryzen 9 7945HS (or the 7840HS in the same chassis) |
+| CPU | AMD Ryzen 7 7840HS (the 7945HS ships in the same chassis) |
 | GPU | NVIDIA **GeForce RTX 4070 Laptop** (140 W, Optimus / hybrid graphics) |
 | BIOS | F.31 / F.32 |
 | OS | Windows 10 or 11, 64-bit |

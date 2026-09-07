@@ -42,7 +42,7 @@ namespace OmenMon.Driver {
         // Amd17Cpu: bits 31:21 hold the reading in 1/8 °C steps, and either select
         // bit means the scale is shifted down by 49 °C.
         //
-        // Verified on this machine (Ryzen 9 7945HS, board 8BCA) against Core Temp:
+        // Verified on this machine (Ryzen 7 7840HS, board 8BCA) against Core Temp:
         //
         //     raw 0x530B0000 -> 34.00 °C     raw 0x4E4B0000 -> 29.25 °C
         //     (Core Temp read 28 °C at the same moment as the second sample)

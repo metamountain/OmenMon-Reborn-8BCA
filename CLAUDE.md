@@ -13,7 +13,7 @@ the method is the transferable part.
 |---|---|
 | Model | HP OMEN Gaming Laptop **16-xf0079ng** (product **84S07EA**) |
 | Board / ProductId | **`8BCA`** |
-| CPU | AMD Ryzen 9 7945HS (Zen 4, Phoenix, family 19h) |
+| CPU | AMD Ryzen 7 7840HS (Zen 4, Phoenix, family 19h, 8C/16T, 54 W) |
 | BIOS | **F.32** (was F.31; the fan findings hold across both) |
 | OS | Windows 11 Home 26100 |
 | Install | `C:\Program Files\OmenMon Reborn 8BCA` |
@@ -77,6 +77,36 @@ for one sample at idle, which would make the fan curves chase transients.
 The module is embedded as `OmenMon.AMDFamily17.bin` and also accepted side-by-side.
 It is byte-identical to PawnIO.Modules release 0.2.11, the same release the existing
 `LpcACPIEC.bin` came from.
+
+### The ~4 °C gap to Core Temp is a different sensor, not an error in our decode
+
+Settled with Core Temp's own `SMN Register dump`, 2026-09-07 11:39. It dumps
+`0x00059800` as `00 00 CB 53`, i.e. **`0x53CB0000`**:
+
+```
+raw >> 21 = 670   ->  670 x 0.125 = 83.75 C
+bit 19 (RANGE_SEL) = 1, bits 16-17 (TJ_SEL) = 1,1   ->  -49
+                                              =  34.75 C
+```
+
+The telemetry rows at `11:39:09` and `11:39:42` both read **34**. So our decode of
+`THM_TCON_CUR_TMP` is correct to well inside a degree, and the median-of-3 costs
+0.75 °C at steady state — not 4. **Neither smoothing nor the decode explains the gap.**
+
+**Disproved: "Core Temp shows the hottest core, we show the package."** Phoenix is
+monolithic and has no per-CCD temperature registers — `0x00059940`-`0x00059950` are all
+zero in the dump, where LibreHardwareMonitor expects `F17H_M70H_CCD_TEMP` at
+`0x00059954`. There is no hotter per-core sensor for it to be reading.
+
+What is left is that Core Temp reads a *different* sensor. Its SMU power-table dump has
+limit/value pairs, and among the values are 33.72, 31.75, 34.44 (limits 100 °C) and
+33.16, **37.89** (limits 80 °C) against our 34.75. The 37.89 is about the reported gap.
+Treat the pairing as inferred, not documented — but the conclusion above does not rest
+on it, only on the register.
+
+**Keep using Tctl for the fan curves.** It is the value AMD's own firmware regulates
+against, and the platform's thermal limits are defined in the same terms. A number that
+reads a few degrees higher is not a better one to control on.
 
 ### GPU temperature comes from NVML, not from the EC
 
