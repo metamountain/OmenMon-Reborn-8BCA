@@ -9,7 +9,7 @@ Hub, the Windows power settings and a separate fan utility that disagree with ea
 Silent, Default and Performance are complete power states, not just three fan speeds.
 
 <p align="center">
-  <img src="docs/screenshot.jpg" alt="OmenMon Reborn 8BCA main window" width="420">
+  <img src="docs/screenshot.png" alt="OmenMon Reborn 8BCA main window" width="480">
 </p>
 
 ---
