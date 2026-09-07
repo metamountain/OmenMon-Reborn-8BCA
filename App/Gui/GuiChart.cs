@@ -23,7 +23,18 @@ namespace OmenMon.AppGui {
         // span to a little over three minutes and doubles the width of everything in it,
         // which is the resolution the recent past actually needs.
         private const int N = 100;                  // history length (samples)
-        private const int TMin = 20, TMax = 100;    // left axis  °C
+        // The temperature axis auto-ranges to what is actually on screen.
+        //
+        // Fixed 20-100 °C spent the plot on temperatures this machine does not reach: at
+        // idle every trace sat in the bottom fifth and a 6 °C drift was two pixels. The
+        // window starts at 25-50, which covers idle and light load, and grows to fit
+        // whatever the samples need — so a load run still shows its whole shape, and the
+        // moment it ends the axis comes back down.
+        private const int TFloor = 25, TCeil = 50;   // the smallest window shown
+        private const int TStep = 10;                // grow in whole steps, not per sample
+        private const int TAbsMax = 105;
+
+        private int tMin = TFloor, tMax = TCeil;     // current, after auto-ranging
         private const int RMin = 0,  RMax = 6000;   // right axis rpm
 
         private readonly int[] cpuT = new int[N];
@@ -72,7 +83,41 @@ namespace OmenMon.AppGui {
                 Array.Copy(cpuR, 1, cpuR, 0, N - 1); cpuR[N - 1] = cpuRpm;
                 Array.Copy(gpuR, 1, gpuR, 0, N - 1); gpuR[N - 1] = gpuRpm;
             }
+            AutoRange();
             if(IsHandleCreated) Invalidate();
+        }
+
+        // Fit the temperature axis to the samples actually held, never smaller than
+        // TFloor..TCeil and always on whole TStep boundaries.
+        //
+        // Snapping to steps is what makes this usable rather than distracting: ranging to
+        // the exact min and max would move the axis on nearly every sample, so the traces
+        // would crawl while the numbers beside them changed, and nothing would hold still
+        // long enough to read. On a step boundary the axis is stable for a whole 10 °C of
+        // drift and only jumps when the data genuinely leaves the window.
+        private void AutoRange() {
+
+            if(count == 0) return;
+
+            int lo = int.MaxValue, hi = int.MinValue;
+            for(int i = 0; i < count; i++) {
+                if(cpuT[i] > 0) { if(cpuT[i] < lo) lo = cpuT[i]; if(cpuT[i] > hi) hi = cpuT[i]; }
+                if(gpuT[i] > 0) { if(gpuT[i] < lo) lo = gpuT[i]; if(gpuT[i] > hi) hi = gpuT[i]; }
+            }
+            if(lo > hi) return;
+
+            // A little air above and below, so a trace never runs along the frame
+            lo -= 2; hi += 2;
+
+            int nMin = Math.Min(TFloor, (int) (Math.Floor(lo / (double) TStep) * TStep));
+            int nMax = Math.Max(TCeil,  (int) (Math.Ceiling(hi / (double) TStep) * TStep));
+
+            if(nMax > TAbsMax) nMax = TAbsMax;
+            if(nMin < 0) nMin = 0;
+
+            this.tMin = nMin;
+            this.tMax = nMax;
+
         }
 
         // Gap between a scale number and the plot frame it labels
@@ -103,7 +148,7 @@ namespace OmenMon.AppGui {
         // Graphics to measure with.
         internal static void MeasureAxes(Graphics g, Font f) {
             if(axisLeft > 0) return;
-            float temp = g.MeasureString(TMax + "°", f).Width;
+            float temp = g.MeasureString(TAbsMax + "°", f).Width;
             float rate = g.MeasureString((RMax / 1000.0).ToString("0.0") + "k", f).Width;
             axisLeft  = (int) Math.Ceiling(Math.Max(temp, rate)) + AxisGap;
             axisRight = (int) Math.Ceiling(rate) + AxisGap;
@@ -135,7 +180,7 @@ namespace OmenMon.AppGui {
             using(var brMuted  = new SolidBrush(GuiTheme.Muted)) {
 
                 // ---- left axis: temperature -------------------------------------
-                for(int t = TMin; t <= TMax; t += 20) {
+                for(int t = this.tMin; t <= this.tMax; t += TStep) {
                     int y = YT(t, p);
                     g.DrawLine(gridPen, p.Left, y, p.Right, y);
                     string s = t + "°";
@@ -176,8 +221,8 @@ namespace OmenMon.AppGui {
             if(count >= 2) {
                 DrawSeries(g, p, cpuR, RMin, RMax, ColCpuR, 1.6f);
                 DrawSeries(g, p, gpuR, RMin, RMax, ColGpuR, 1.6f);
-                DrawSeries(g, p, cpuT, TMin, TMax, ColCpuT, 2.2f);
-                DrawSeries(g, p, gpuT, TMin, TMax, ColGpuT, 2.2f);
+                DrawSeries(g, p, cpuT, this.tMin, this.tMax, ColCpuT, 2.2f);
+                DrawSeries(g, p, gpuT, this.tMin, this.tMax, ColGpuT, 2.2f);
             }
 
             // ---- legend with live values ---------------------------------------
@@ -200,7 +245,7 @@ namespace OmenMon.AppGui {
         }
 
         private int YT(int tempC, Rectangle p) {
-            double f = (double)(tempC - TMin) / (TMax - TMin);
+            double f = (double)(tempC - this.tMin) / (this.tMax - this.tMin);
             return (int)(p.Bottom - f * p.Height);
         }
         private int YR(int rpm, Rectangle p) {

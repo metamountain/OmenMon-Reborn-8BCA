@@ -1584,16 +1584,80 @@ namespace OmenMon.AppGui {
 
         }
 
+        // Inline colour picker — square + hue strip, R/G/B boxes, swatch, eyedropper.
+        // Applies live to the selected zone, exactly as the modal dialog's real-time
+        // preview did, but without covering the keyboard picture it is colouring.
+        private GuiPipette kbdPipette;
+        private bool kbdColorSyncing;
+
+        private void EventKbdPickerChanged(object sender, EventArgs e) {
+            if(this.kbdColorSyncing) return;
+            ApplyKbdColor(this.KbdPicker.Color, false);
+        }
+
+        private void EventKbdRgbNum(object sender, EventArgs e) {
+            if(this.kbdColorSyncing) return;
+            ApplyKbdColor(Color.FromArgb(
+                (int) this.NumKbdR.Value, (int) this.NumKbdG.Value, (int) this.NumKbdB.Value), true);
+        }
+
+        private void EventKbdPipetteClick(object sender, EventArgs e) {
+            if(this.kbdPipette == null)
+                this.kbdPipette = new GuiPipette(this,
+                    c => ApplyKbdColor(c, true),      // live while sampling
+                    c => ApplyKbdColor(c, true));     // and on the click that ends it
+            if(this.kbdPipette.IsActive) this.kbdPipette.Stop(true);
+            else this.kbdPipette.Start();
+        }
+
+        // The one place a colour reaches the hardware from this panel. syncPicker is
+        // false when the picker itself was the source, so dragging on the square does
+        // not fight the handle position being written back underneath the pointer.
+        private void ApplyKbdColor(Color c, bool syncPicker) {
+
+            if(Kbd == null) return;
+
+            try {
+                this.kbdColorSyncing = true;
+
+                int zi = this.CmbKbdZone.SelectedIndex;
+                if(zi <= 0) Kbd.SetColors(c.ToArgb());
+                else Kbd.SetColor(KbdZoneByCombo[zi], c.ToArgb());
+
+                if(syncPicker) this.KbdPicker.Color = c;
+                this.NumKbdR.Value = c.R;
+                this.NumKbdG.Value = c.G;
+                this.NumKbdB.Value = c.B;
+                this.PnlKbdSwatch.BackColor = c;
+                this.TxtKbdColorVal.Text = Kbd.GetParam();
+                try { this.CmbKbdColorPreset.SelectedValue = Kbd.GetPreset(); } catch { }
+
+            } catch(Exception ex) {
+                Config.ErrorLog("GuiFormMain.ApplyKbdColor", ex);
+            } finally {
+                this.kbdColorSyncing = false;
+            }
+
+        }
+
         // Push the selected zone's colour into the swatch.
         // In "All" mode the Right zone's colour represents the (uniform) keyboard.
         private void SyncKbdRgb() {
             if(Kbd == null)
                 return;
             try {
+                this.kbdColorSyncing = true;
                 int zi = this.CmbKbdZone.SelectedIndex;
-                this.PnlKbdSwatch.BackColor = Color.FromArgb(Kbd.GetColor(
+                Color c = Color.FromArgb(Kbd.GetColor(
                     zi <= 0 ? BiosData.KbdZone.Right : KbdZoneByCombo[zi]));
-            } catch { }
+                this.PnlKbdSwatch.BackColor = c;
+                this.KbdPicker.Color = c;
+                this.NumKbdR.Value = c.R;
+                this.NumKbdG.Value = c.G;
+                this.NumKbdB.Value = c.B;
+            } catch { } finally {
+                this.kbdColorSyncing = false;
+            }
         }
 
         // Keeps updating the color as it changes in the Color Picker dialog

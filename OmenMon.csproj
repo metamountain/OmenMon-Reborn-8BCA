@@ -89,6 +89,8 @@
     </Compile>
     <Compile Include="App\Gui\GuiCalibrationProcessGuard.cs" />
     <Compile Include="App\Gui\GuiChart.cs" />
+    <Compile Include="App\Gui\GuiColorPicker.cs" />
+    <Compile Include="App\Gui\GuiPipette.cs" />
     <Compile Include="App\Gui\GuiCurveEditor.cs" />
     <Compile Include="App\Gui\GuiFormCurve.cs" />
     <Compile Include="App\Gui\GuiFormError.cs" />

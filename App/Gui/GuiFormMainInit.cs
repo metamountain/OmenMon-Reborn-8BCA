@@ -83,6 +83,10 @@ namespace OmenMon.AppGui {
         private Label LblTmp8Cap, LblTmp8Val;
         private Panel PnlTmpHidden;
         private Panel PnlKbdSwatch;
+        internal GuiColorPicker KbdPicker;    // inline SV square + hue strip
+        private Button BtnKbdPipette;         // screen colour sampler
+        private NumericUpDown NumKbdR, NumKbdG, NumKbdB;
+        private Label LblKbdR, LblKbdG, LblKbdB;
         internal PictureBox PicKbd;
         private ProgressBarEx BarFan0Rte;
         private ProgressBarEx BarFan1Rte;
@@ -111,6 +115,19 @@ namespace OmenMon.AppGui {
                 GdiFont.Get("IoMon"), Config.GuiFigureFontSize, FontStyle.Regular, GraphicsUnit.Pixel);
             Font heroFont = GuiTheme.Ui(GuiTheme.FontDisplay);
             Font capFont  = GuiTheme.Ui(GuiTheme.FontBody);
+
+            // The form's font is set HERE, before anything is measured or sized.
+            //
+            // It used to be assigned near the end of this method, after every control had
+            // been laid out. FitButton measures a button's label in `b.Font ?? this.Font`,
+            // so until that assignment it was measuring in the default Windows font — and
+            // Inter is wider. Every button sized from its own text came out too narrow:
+            // "Check for updates" was the visible one, but Apply, Save and the keyboard
+            // preset buttons were all measured against the wrong face.
+            //
+            // Controls created after this line also inherit it, which is what makes the
+            // measurement and the rendering agree.
+            try { this.Font = capFont; } catch { }
 
 #region Instantiation
             this.BarFan0Rte = new ProgressBarEx();
@@ -170,6 +187,10 @@ namespace OmenMon.AppGui {
             this.LblTmp8Cap = new Label(); this.LblTmp8Val = new Label();
             this.PnlTmpHidden = new Panel();
             this.PnlKbdSwatch = new Panel();
+            this.KbdPicker = new GuiColorPicker();
+            this.BtnKbdPipette = new Button();
+            this.NumKbdR = new NumericUpDown(); this.NumKbdG = new NumericUpDown(); this.NumKbdB = new NumericUpDown();
+            this.LblKbdR = new Label(); this.LblKbdG = new Label(); this.LblKbdB = new Label();
             this.PicKbd = new PictureBox();
             this.RdoFanAuto = new RadioButton();
             this.RdoFanConst = new RadioButton();
@@ -246,7 +267,7 @@ namespace OmenMon.AppGui {
             // the controls need is shared out rather than left at the bottom: each panel
             // gets a third, and the rows inside it spread to fill (see the sections).
             const int H_TMP_MIN = HDR + 100;   // hero readout: second row at HDR+58, 40 tall
-            const int H_PWR_MIN = HDR + 74;    // radios, then the hint label at HDR+36
+            const int H_PWR_MIN = HDR + 106;   // two rows of radios, then the hint at HDR+68
             const int H_SYS_MIN = HDR + 88;    // autostart, buttons, three lines of Consolas
 
             const int H_SLACK = (ROW - 2 * GAP - H_TMP_MIN - H_PWR_MIN - H_SYS_MIN) / 3;
@@ -499,14 +520,28 @@ namespace OmenMon.AppGui {
             // One selector. Each choice sets the Windows power mode *and* the CPU
             // wattage limits together — the user shouldn't have to know they are two
             // different layers. Selected = solid accent fill, so it is unmistakable.
-            int pw = (W - 2 * PAD - 24) / 4;
+            // Two by two, not four across.
+            //
+            // Four in a row gave each 104 px, and "Performance" was clipped in it. The
+            // measurement said it fitted with 12 px to spare — and the same measurement
+            // said "Backlight" fitted in its 90 px, which it did not either. A
+            // toggle-styled RadioButton reports a smaller preferred size than it actually
+            // paints, so a ten-pixel margin is not a margin. Two columns give each button
+            // 216 px, which is not a margin that needs measuring to trust, and the panel
+            // has the height for a second row now that the quadrant shares its surplus.
+            const int PWCOLS = 2;
+            int pw = (W - 2 * PAD - GUT) / PWCOLS;
+            const int PWH = 28;
+
             Action<RadioButton, string, int> mkPwr = (rb, t, i) => {
                 rb.Text = t;
                 rb.Appearance = Appearance.Button;
                 rb.FlatStyle = FlatStyle.Flat;
                 rb.TextAlign = ContentAlignment.MiddleCenter;
-                rb.Location = new Point(PAD + i * (pw + 8), HDR);
-                rb.Size = new Size(pw, 30);
+                rb.Location = new Point(
+                    PAD + (i % PWCOLS) * (pw + GUT),
+                    HDR + (i / PWCOLS) * (PWH + GUT));
+                rb.Size = new Size(pw, PWH);
                 rb.BackColor = GuiTheme.Panel;
                 rb.ForeColor = GuiTheme.Text;
                 rb.FlatAppearance.BorderColor = GuiTheme.Border;
@@ -546,12 +581,13 @@ namespace OmenMon.AppGui {
             const int PCAPW = 84;
             const int PCAPX = NUMX - GUT - PCAPW;
 
-            MakeMiniRight("Sustained W", new Point(PCAPX, HDR + 42), PCAPW, capFont, this.GrpPwr);
+            MakeMiniRight("Sustained W", new Point(PCAPX, HDR + 74), PCAPW, capFont, this.GrpPwr);
             this.NumPwrWatt.Minimum = 25;
             this.NumPwrWatt.Maximum = 54;
             this.NumPwrWatt.Value = 45;
             this.NumPwrWatt.Increment = 1;
-            this.NumPwrWatt.Location = new Point(NUMX, HDR + 40);
+            // Below the two button rows (2 x 28 + one gutter = 64)
+            this.NumPwrWatt.Location = new Point(NUMX, HDR + 72);
             this.NumPwrWatt.Size = new Size(NUMW, 24);
             this.NumPwrWatt.TextAlign = HorizontalAlignment.Center;
             this.NumPwrWatt.BorderStyle = BorderStyle.FixedSingle;
@@ -563,7 +599,7 @@ namespace OmenMon.AppGui {
             this.LblPwrHint.AutoSize = false;
             this.LblPwrHint.Font = capFont;
             this.LblPwrHint.ForeColor = GuiTheme.Muted;
-            this.LblPwrHint.Location = new Point(PAD, HDR + 36);
+            this.LblPwrHint.Location = new Point(PAD, HDR + 68);
             this.LblPwrHint.Size = new Size(PCAPX - GUT - PAD, 34);
             this.LblPwrHint.Text = "";
 
@@ -626,26 +662,67 @@ namespace OmenMon.AppGui {
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
-            // The R/G/B sliders are gone. Picking a colour by dragging three sliders is
-            // worse than the colour dialog the swatch already opens, and they cost the
-            // vertical room the keyboard needed to be clickable at all. The swatch shows
-            // the selected zone's colour and opens the picker; the hex field below still
-            // takes a typed value.
-            // The three rows below the picture are spread evenly through what is left of
-            // the square, rather than stacked under it with the remainder dumped at the
-            // bottom. The panel fills its quadrant, so the space belongs to the content.
-            const int SWW = 24, H_SWROW = 24, H_PRESETROW = 27, H_HEXROW = 24;
-            int kbdFree = ROW - PAD - (HDR + 32) - H_KBDPIC
-                - H_SWROW - H_PRESETROW - H_HEXROW;
-            int kbdGap = Math.Max(GUT, kbdFree / 3);
+            // The colour picker lives here, under the keyboard it colours, instead of in
+            // a modal dialog over the window. Picking a zone colour means looking at the
+            // picture directly above while you drag — a dialog that covers it (and, until
+            // it was given a position, opened in the corner of the screen) makes the one
+            // comparison that matters impossible.
+            //
+            // Same parts as the Windows picker: a saturation/value square with a hue
+            // strip, R/G/B boxes, a hex field, a swatch and an eyedropper.
+            const int SWW = 34, H_PRESETROW = 27, H_HEXROW = 24, H_RGBROW = 24;
+            const int H_PICKER = 108;
 
-            int ry = HDR + 32 + H_KBDPIC + kbdGap;
+            int ry = HDR + 32 + H_KBDPIC + GUT;
 
-            this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry);
-            this.PnlKbdSwatch.Size = new Size(SWW, H_SWROW);
+            // Square + hue strip on the left; the numbers stack down the right
+            const int PKRIGHTW = 148;
+            this.KbdPicker.Location = new Point(PAD, ry);
+            this.KbdPicker.Size = new Size(W - 2 * PAD - GUT - PKRIGHTW, H_PICKER);
+            this.GrpKbd.Controls.Add(this.KbdPicker);
+
+            int rx = W - PAD - PKRIGHTW;
+
+            // Swatch and eyedropper share the top line of the right-hand column
+            this.PnlKbdSwatch.Location = new Point(rx, ry);
+            this.PnlKbdSwatch.Size = new Size(SWW, H_RGBROW);
             this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
 
-            int py = ry + H_SWROW + kbdGap;
+            this.BtnKbdPipette.Text = "⛏";
+            this.BtnKbdPipette.FlatStyle = FlatStyle.Flat;
+            this.BtnKbdPipette.BackColor = GuiTheme.PanelHi;
+            this.BtnKbdPipette.ForeColor = GuiTheme.Text;
+            this.BtnKbdPipette.FlatAppearance.BorderColor = GuiTheme.Border;
+            this.BtnKbdPipette.Location = new Point(rx + SWW + GUT, ry - 1);
+            this.BtnKbdPipette.Size = new Size(30, 26);
+            this.GrpKbd.Controls.Add(this.BtnKbdPipette);
+            this.Tip.SetToolTip(this.BtnKbdPipette,
+                "Pick a colour from anywhere on the screen. Click to sample, Esc to cancel.");
+
+            // R / G / B, one per line, right under the swatch
+            Action<Label, NumericUpDown, string, int> mkRgb = (lbl, num, name, i) => {
+                int y = ry + H_RGBROW + GUT + i * (H_RGBROW + 4);
+                lbl.Text = name; lbl.Font = capFont; lbl.ForeColor = cCap;
+                lbl.AutoSize = false;
+                lbl.Location = new Point(rx, y + 3);
+                lbl.Size = new Size(16, 20);
+                this.GrpKbd.Controls.Add(lbl);
+
+                num.Minimum = 0; num.Maximum = 255; num.Increment = 1;
+                num.Location = new Point(rx + 20, y);
+                num.Size = new Size(56, H_RGBROW);
+                num.TextAlign = HorizontalAlignment.Center;
+                num.BorderStyle = BorderStyle.FixedSingle;
+                num.BackColor = GuiTheme.Panel;
+                num.ForeColor = GuiTheme.Text;
+                num.ValueChanged += EventKbdRgbNum;
+                this.GrpKbd.Controls.Add(num);
+            };
+            mkRgb(this.LblKbdR, this.NumKbdR, "R", 0);
+            mkRgb(this.LblKbdG, this.NumKbdG, "G", 1);
+            mkRgb(this.LblKbdB, this.NumKbdB, "B", 2);
+
+            int py = ry + H_PICKER + GUT;
             this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbKbdColorPreset.Location = new Point(PAD, py);
             this.CmbKbdColorPreset.Size = new Size(132, 26);
@@ -671,7 +748,7 @@ namespace OmenMon.AppGui {
 
             // Hex value on its own line under the preset row
             this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
-            this.TxtKbdColorVal.Location = new Point(PAD, py + H_PRESETROW + kbdGap);
+            this.TxtKbdColorVal.Location = new Point(PAD, py + H_PRESETROW + GUT);
             this.TxtKbdColorVal.MaxLength = 27;
             this.TxtKbdColorVal.Size = new Size(W - 2 * PAD, H_HEXROW);
             this.TxtKbdColorVal.TextAlign = HorizontalAlignment.Center;
@@ -912,6 +989,8 @@ namespace OmenMon.AppGui {
             this.BtnKbdColorPresetRen.Click += EventActionColorPresetRen;
             this.BtnKbdColorPresetSet.Click += EventActionColorPresetSet;
             this.PicKbd.MouseClick += EventColorPick;
+            this.KbdPicker.ColorChanged += EventKbdPickerChanged;
+            this.BtnKbdPipette.Click += EventKbdPipetteClick;
 #endregion
         }
 
@@ -995,8 +1074,20 @@ namespace OmenMon.AppGui {
         // that has since changed font twice.
         private int FitButton(Control b, int minimum) {
             try {
-                return Math.Max(minimum,
-                    TextRenderer.MeasureText(b.Text, b.Font ?? this.Font).Width + 22);
+
+                // Two estimates, and take the larger of them.
+                //
+                // Neither is reliable alone. TextRenderer.MeasureText knows the string but
+                // not the control's chrome; GetPreferredSize knows the chrome but reports
+                // less than the control actually paints — that is how "Backlight" fitted
+                // in 90 px on paper and rendered as "Backlig", and how "Performance"
+                // fitted in 104 and did not. Padding each and taking the maximum stops a
+                // ten-pixel theoretical margin from being treated as a real one.
+                int text = TextRenderer.MeasureText(b.Text, b.Font ?? this.Font).Width + 28;
+                int pref = b.GetPreferredSize(Size.Empty).Width + 10;
+
+                return Math.Max(minimum, Math.Max(text, pref));
+
             } catch {
                 return minimum;
             }
