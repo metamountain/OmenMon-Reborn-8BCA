@@ -363,12 +363,47 @@ namespace OmenMon.AppGui {
                 //
                 // Guarded on s.Off: when the fans really have been switched off, zero is
                 // the truth and must show.
+                // What the fan program last asked the hardware for, if it is running
+                byte[] commanded = null;
+                try {
+                    if(op.Program != null && op.Program.IsEnabled && op.Program.HasCommandedLevels)
+                        commanded = op.Program.GetCommandedLevels();
+                } catch { }
+
                 MonitorSnapshot last = this.CurrentSnapshot;
                 if(last != null && last.HasFanSys && !s.Off) {
                     for(int i = 0; i < PlatformData.FanCount; i++) {
                         if(s.FanSpeed[i] == 0 && last.FanSpeed[i] > 0) s.FanSpeed[i] = last.FanSpeed[i];
                         if(s.FanLevel[i] == 0 && last.FanLevel[i] > 0) s.FanLevel[i] = last.FanLevel[i];
                         if(s.FanRate[i]  == 0 && last.FanRate[i]  > 0) s.FanRate[i]  = last.FanRate[i];
+
+                        // Check the reading against what was actually commanded, not
+                        // against the previous reading.
+                        //
+                        // Zero is not the only shape a bad read takes. On 2026-09-07 at
+                        // 19:26:04 the level read 2 with the previous sample at 45 and the
+                        // next at 46, while the CPU was at 78 °C — one bad GetFanLevel
+                        // answer, printed as 200 rpm because rpm is derived from the level
+                        // on this board, so a single misread appears as two agreeing
+                        // numbers. It looked exactly like the fans stopping under load.
+                        //
+                        // The program knows what it asked for, so that is the authority.
+                        // A reading far below the command is either a bad read or a write
+                        // that did not take; nbfc-linux treats the same divergence as the
+                        // latter and re-applies. SetFanLevel is unconditional here, so the
+                        // re-assertion already happens every tick — this makes it visible,
+                        // and keeps the divergence out of the display and the graph.
+                        //
+                        // Gated on the countdown: if the firmware has taken the fans back,
+                        // a genuine drop must be allowed to show.
+                        if(s.Countdown > 0 && commanded != null
+                            && commanded[i] - s.FanLevel[i] > MaxPlausibleLevelDrop) {
+                            Config.ErrorLog("Monitor.FanLevelDiverged", null,
+                                "fan " + i + " read " + s.FanLevel[i] + " while commanded "
+                                    + commanded[i] + "; holding the commanded value");
+                            s.FanLevel[i] = commanded[i];
+                            s.FanSpeed[i] = (ushort) (commanded[i] * 100);
+                        }
                     }
                     if(s.Countdown == 0 && last.Countdown > 0) s.Countdown = last.Countdown;
                 }
@@ -461,6 +496,12 @@ namespace OmenMon.AppGui {
         // 8 s costs one CSV line every eight seconds — nothing, next to a log that
         // rotates at 4 MB — and is fine enough that a cooldown reads as a slope.
         private const int TelemetryEvery = 8;
+
+        // The largest one-sample fall in fan level this program can have asked for.
+        // FanProgram winds down at DescendLevelsPerSecond (0.5, i.e. one level per two
+        // seconds); at a monitor tick of a second or two, and with room for a long stall,
+        // anything past this did not come from the curve. See the read-back guard above.
+        private const int MaxPlausibleLevelDrop = 20;
         private int TelemetryTick;
 
 

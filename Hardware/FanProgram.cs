@@ -498,6 +498,9 @@ namespace OmenMon.Hardware.Platform {
                 + Config.Locale.Get(Config.L_PROG + "Fans") + " "
                 + Conv.GetString(fans[0], 2, 10) + ", " + Conv.GetString(fans[1], 2, 10));
 
+            // Slow the way down, never the way up
+            EaseDown(fans);
+
             // Set fan levels
             SetFanLevel(fans);
 
@@ -620,6 +623,90 @@ namespace OmenMon.Hardware.Platform {
             // Report status via the callback method
             Callback(severity, message);
 
+        }
+
+        // Rate-limits downward fan changes, and only downward.
+        //
+        // A fan curve is a step function with no hysteresis, so a temperature crossing a
+        // threshold moves the fan the whole distance between two rows at once. Falling
+        // that abruptly is audible and unlike anything the hardware does on its own; a
+        // laptop coming off load winds down over a minute or so, it does not drop from
+        // 5500 to 1700 rpm between one tick and the next.
+        //
+        // Rising is deliberately not limited. Getting air to a hot part late is the
+        // failure this program exists to prevent, and on 2026-09-07 at 19:26 the CPU went
+        // from 78 °C to 92 in a single twelve-second gap. Anything that delays a rise is
+        // dangerous; delaying a fall costs nothing but a few seconds of extra noise.
+        //
+        // Measured in levels per second rather than per tick, because the tick is not
+        // reliable: under a rendering load the monitor thread has been observed 11 to 27
+        // seconds late. A per-tick step would make the wind-down take a quarter of an hour
+        // exactly when the machine is busy, which is the opposite of what is wanted.
+        private void EaseDown(byte[] fans) {
+
+            DateTime now = DateTime.UtcNow;
+
+            if(this.easeAt == DateTime.MinValue) {
+                this.easeAt = now;
+                for(int i = 0; i < fans.Length && i < this.easeLevel.Length; i++)
+                    this.easeLevel[i] = fans[i];
+                return;
+            }
+
+            double seconds = (now - this.easeAt).TotalSeconds;
+            this.easeAt = now;
+
+            // Never negative, and never so large after a long stall that the limit stops
+            // limiting: a gap of a minute should still wind down smoothly, not teleport
+            if(seconds < 0) seconds = 0;
+            int maxDrop = (int) Math.Ceiling(seconds * DescendLevelsPerSecond);
+            if(maxDrop < 1) maxDrop = 1;
+
+            for(int i = 0; i < fans.Length && i < this.easeLevel.Length; i++) {
+
+                int target = fans[i];
+                int last = this.easeLevel[i];
+
+                // Up immediately, down at the limited rate
+                int applied = target >= last ? target : Math.Max(target, last - maxDrop);
+
+                this.easeLevel[i] = applied;
+                fans[i] = (byte) applied;
+
+            }
+
+        }
+
+        // One level — 100 rpm — every two seconds. Max to idle, 5500 to 1700 rpm, is then
+        // a little over a minute, which is about what the firmware's own wind-down sounds
+        // like and slow enough that no single step is audible as a step.
+        private const double DescendLevelsPerSecond = 0.5;
+
+        // Last level actually commanded per fan, and when — the state EaseDown works from
+        private readonly int[] easeLevel = new int[PlatformData.FanCount];
+        private DateTime easeAt = DateTime.MinValue;
+
+        // What this program last told the hardware to do, so a reading can be checked
+        // against an intention rather than against the previous reading.
+        //
+        // Borrowed from nbfc-linux, which compares the fan's current speed with its target
+        // and re-applies its register writes when they diverge by more than 15 % — it
+        // treats a mismatch as evidence the EC did not take the write. SetFanLevel here is
+        // unconditional, so the re-assertion happens on every tick anyway; what was
+        // missing was noticing, and saying so.
+        public byte[] GetCommandedLevels() {
+            byte[] copy = new byte[this.easeLevel.Length];
+            for(int i = 0; i < copy.Length; i++)
+                copy[i] = (byte) (this.easeLevel[i] < 0 ? 0
+                    : this.easeLevel[i] > 255 ? 255 : this.easeLevel[i]);
+            return copy;
+        }
+
+        // Whether a level has ever been commanded — before that, GetCommandedLevels() is
+        // all zeroes and comparing against it would report a divergence that is really
+        // just startup
+        public bool HasCommandedLevels {
+            get { return this.easeAt != DateTime.MinValue; }
         }
 
         // Updates the fan manual mode countdown, optionally only if necessary.
