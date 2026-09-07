@@ -212,10 +212,15 @@ namespace OmenMon.AppGui {
             //     +---------------------+---------------------+
             //
             const int WIN = 960;                                 // square, client area
-            const int GAP = 8;                                   // between panels
+            const int CROSS = 20;                                // the black cross between quadrants
+            const int GAP = 8;                                   // minor gap, within a quadrant
             const int PAD_ = 10;                                 // window margin (GuiTheme.Pad)
-            const int W = (WIN - 2 * PAD_ - GAP) / 2;            // one column = 466
-            const int ROW = (WIN - 2 * PAD_ - GAP) / 2;          // one row    = 466
+
+            // Exact squares: 960 = 10 + 460 + 20 + 460 + 10, both ways. The 20 px cross
+            // and the 10 px border are the window's black ground showing through between
+            // the panels, which are the only thing painted in the panel colour.
+            const int W = (WIN - 2 * PAD_ - CROSS) / 2;          // one column = 460
+            const int ROW = (WIN - 2 * PAD_ - CROSS) / 2;        // one row    = 460
             const int HDR = GuiTheme.CaptionBand; // first content row, below the caption rule
             const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
 
@@ -236,8 +241,20 @@ namespace OmenMon.AppGui {
             const int TMPX = COL2 + RPMW + GUT;     // °C column, running to W - PAD
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
 
-            const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
-            const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
+            // The bottom-right quadrant is three panels that must total exactly one row,
+            // gaps included, so its square matches the other three. The surplus over what
+            // the controls need is shared out rather than left at the bottom: each panel
+            // gets a third, and the rows inside it spread to fill (see the sections).
+            const int H_TMP_MIN = HDR + 100;   // hero readout: second row at HDR+58, 40 tall
+            const int H_PWR_MIN = HDR + 74;    // radios, then the hint label at HDR+36
+            const int H_SYS_MIN = HDR + 88;    // autostart, buttons, three lines of Consolas
+
+            const int H_SLACK = (ROW - 2 * GAP - H_TMP_MIN - H_PWR_MIN - H_SYS_MIN) / 3;
+
+            const int H_TMP = H_TMP_MIN + H_SLACK;
+            const int H_PWR = H_PWR_MIN + H_SLACK;
+            // The last one takes the rounding, so the three always sum to exactly ROW
+            const int H_SYS = ROW - 2 * GAP - H_TMP - H_PWR;
 
             // The keyboard picture spans its column, so its edges sit on the same margin
             // as every caption, rule and control. The height follows from the native
@@ -247,9 +264,10 @@ namespace OmenMon.AppGui {
 
             // Picture at HDR + 32, then 8 px, the swatch row, the preset row and the hex
             // field (96 px in total), then the section's own bottom margin
-            const int H_KBD = HDR + 32 + H_KBDPIC + 8 + 96 + GuiTheme.Pad;
+            // The keyboard panel fills its square; the picture is centred in the space
+            // above the control rows, which sit at the bottom
+            const int H_KBD = ROW;
 
-            const int H_SYS = HDR + 88;    // autostart, exit, three lines of Consolas + margin
 
             // The two graphs fill their quadrants. They are still the elastic thing in the
             // layout, but a quadrant is a fixed share of the window rather than whatever
@@ -257,9 +275,8 @@ namespace OmenMon.AppGui {
             //
             // The curve gives up 64 px the history does not need: the profile row above it
             // and the readout / entry row below it.
-            const int H_FANROWS = 64;
-            int hChart = ROW - HDR + 4;                  // GrpChart is HDR + hChart - 4
-            int hCurve = ROW - HDR - H_FANROWS - PAD;
+            int hChart = ROW - (GuiTheme.CaptionRuleY + 2) - PAD;   // fills its square
+            int hCurve = ROW - (HDR + 58) - PAD;                    // fills the rest of its square
 
 #region Section: Graph
             // Pulled up into the caption band to give the plot height, but never above the
@@ -269,7 +286,7 @@ namespace OmenMon.AppGui {
             this.Chart.Size = new Size(W - 2 * PAD, hChart);
             this.Chart.SampleSeconds = Math.Max(1, Config.UpdateMonitorInterval);
             this.GrpChart.Controls.Add(this.Chart);
-            this.GrpChart.Size = new Size(W, HDR + hChart - 4);
+            this.GrpChart.Size = new Size(W, ROW);
             this.GrpChart.TabStop = false;
             this.GrpChart.Text = "History";
 #endregion
@@ -473,7 +490,7 @@ namespace OmenMon.AppGui {
             this.GrpFan.Controls.Add(this.BtnProfRen);
             this.GrpFan.Controls.Add(this.LblFanCountdown);
             this.GrpFan.Controls.Add(this.Curve);
-            this.GrpFan.Size = new Size(W, fa + hCurve + 64);
+            this.GrpFan.Size = new Size(W, ROW);
             this.GrpFan.TabStop = false;
             this.GrpFan.Text = "Fan profile";
 #endregion
@@ -614,14 +631,21 @@ namespace OmenMon.AppGui {
             // vertical room the keyboard needed to be clickable at all. The swatch shows
             // the selected zone's colour and opens the picker; the hex field below still
             // takes a typed value.
-            int ry = HDR + 40 + H_KBDPIC;
-            const int SWW = 24;
+            // The three rows below the picture are spread evenly through what is left of
+            // the square, rather than stacked under it with the remainder dumped at the
+            // bottom. The panel fills its quadrant, so the space belongs to the content.
+            const int SWW = 24, H_SWROW = 24, H_PRESETROW = 27, H_HEXROW = 24;
+            int kbdFree = ROW - PAD - (HDR + 32) - H_KBDPIC
+                - H_SWROW - H_PRESETROW - H_HEXROW;
+            int kbdGap = Math.Max(GUT, kbdFree / 3);
 
-            this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry + 3);
-            this.PnlKbdSwatch.Size = new Size(SWW, 24);
+            int ry = HDR + 32 + H_KBDPIC + kbdGap;
+
+            this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry);
+            this.PnlKbdSwatch.Size = new Size(SWW, H_SWROW);
             this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
 
-            int py = ry + 40;
+            int py = ry + H_SWROW + kbdGap;
             this.CmbKbdColorPreset.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbKbdColorPreset.Location = new Point(PAD, py);
             this.CmbKbdColorPreset.Size = new Size(132, 26);
@@ -647,9 +671,9 @@ namespace OmenMon.AppGui {
 
             // Hex value on its own line under the preset row
             this.TxtKbdColorVal.CharacterCasing = CharacterCasing.Upper;
-            this.TxtKbdColorVal.Location = new Point(PAD, py + 32);
+            this.TxtKbdColorVal.Location = new Point(PAD, py + H_PRESETROW + kbdGap);
             this.TxtKbdColorVal.MaxLength = 27;
-            this.TxtKbdColorVal.Size = new Size(W - 2 * PAD, 24);
+            this.TxtKbdColorVal.Size = new Size(W - 2 * PAD, H_HEXROW);
             this.TxtKbdColorVal.TextAlign = HorizontalAlignment.Center;
 
             this.GrpKbd.Controls.Add(this.ChkKbdBacklight);
@@ -745,14 +769,16 @@ namespace OmenMon.AppGui {
             // Tile the four quadrants. Left column monitors and edits — the two graphs;
             // right column configures. Nothing overlaps, nothing scrolls, and every panel
             // is on screen at once.
-            int colL = PAD, colR = PAD + W + GAP;
-            int rowT = PAD, rowB = PAD + ROW + GAP;
+            int colL = PAD, colR = PAD + W + CROSS;
+            int rowT = PAD, rowB = PAD + ROW + CROSS;
 
             this.GrpChart.Location = new Point(colL, rowT);   // history
             this.GrpFan.Location   = new Point(colR, rowT);   // profile + curve
             this.GrpKbd.Location   = new Point(colL, rowB);   // keyboard
 
-            // The bottom-right quadrant holds the three short panels, stacked
+            // The bottom-right quadrant holds three short panels. Their heights were set
+            // above to sum, with the two minor gaps, to exactly one row — so the quadrant
+            // is the same square as the other three and the cross stays even.
             this.GrpTmp.Location = new Point(colR, rowB);
             this.GrpPwr.Location = new Point(colR, this.GrpTmp.Bottom + GAP);
             this.GrpSys.Location = new Point(colR, this.GrpPwr.Bottom + GAP);

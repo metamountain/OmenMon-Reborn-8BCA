@@ -249,17 +249,24 @@ namespace OmenMon.AppGui {
             }
 
             this.Curve.LoadProgram(name);
-            // The three reference curves are read-only: selectable, appliable, copyable
-            // with "+", but not editable. See GuiCurveEditor.ReadOnly.
+
+            // Every curve is editable, including the three reference ones.
+            //
+            // They were read-only for a while, on the theory that Default / Silent /
+            // Performance are the baseline the rest of the work is measured against and
+            // should not be changed by accident. In use that was simply "fan curves not
+            // working": the profile most likely to be selected is a reference one,
+            // dragging a point did nothing, and Save answered "No profile selected —
+            // nothing to save", which was not even the real reason. A tool that quietly
+            // refuses is worse than one that lets you change your own configuration.
+            //
+            // Deleting a reference profile is still blocked, because that is destructive
+            // and a mis-click rather than an edit; "+" still makes a copy to experiment in.
             bool locked = IsStandardProfile(name);
             this.BtnProfDel.Enabled = !locked;
-            this.Curve.ReadOnly = locked;
-            this.BtnCurveEdit.Enabled = !locked;
-            if(locked) {
-                this.NumCurveTemp.Enabled = false;
-                this.NumCurveRpm.Enabled = false;
-            }
-            this.LblCurveInfo.Text = locked ? LockedHelpText : CurveHelpText;
+            this.Curve.ReadOnly = false;
+            this.BtnCurveEdit.Enabled = true;
+            this.LblCurveInfo.Text = CurveHelpText;
 
             // Only auto-apply for a real user pick — the constructor calls this too,
             // and AutoConfig has already started the default profile by then.

@@ -25,7 +25,12 @@ namespace OmenMon.AppGui {
         // every step carried a little blue) with a blue accent and an amber warning on
         // top. Selection now reads as inversion — light ground, dark text — which is
         // unmistakable without a hue and survives being looked at on a bad panel.
-        public static readonly Color Bg      = Color.FromArgb(0x18, 0x18, 0x18); // window
+        // The ground the tiled panels sit on. Black, so the 20 px gaps between the four
+        // quadrants read as a cross and the 10 px border frames them, without anything
+        // having to draw a line.
+        public static readonly Color Ground  = Color.Black;
+
+        public static readonly Color Bg      = Color.FromArgb(0x18, 0x18, 0x18); // panels
         public static readonly Color Panel   = Color.FromArgb(0x24, 0x24, 0x24); // raised areas / inputs
         public static readonly Color PanelHi = Color.FromArgb(0x2E, 0x2E, 0x2E); // hover
         public static readonly Color Border  = Color.FromArgb(0x3C, 0x3C, 0x3C);
@@ -111,7 +116,11 @@ namespace OmenMon.AppGui {
         // Entry point: theme a whole form, non-client area included.
         public static void Apply(Form form) {
             if(form == null) return;
-            form.BackColor = Bg;
+            // Black, so the gaps between the tiled panels read as a cross. The panels
+            // paint themselves in Bg (see PaintGroupBox), and the only places this shows
+            // through are the 20 px cross between the four quadrants and the 10 px border
+            // around them. Nothing draws the cross — it is the ground.
+            form.BackColor = Ground;
             form.ForeColor = Text;
             foreach(Control c in form.Controls)
                 ApplyTo(c);
