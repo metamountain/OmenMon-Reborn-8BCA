@@ -71,8 +71,18 @@ namespace OmenMon.Driver {
         // The limit actually in force, in milliwatts — what the board will let the GPU
         // draw right now, after cTGP and PPAB have been applied. Read rather than derived
         // from those two flags: the flags say which knobs are on, not what they came to.
+        //
+        // It moves: 80 000 with the GPU parked, 105 000 with Dynamic Boost available. That
+        // is why it is reported alongside the default below rather than on its own — a
+        // single "the limit" is a question with two right answers depending on when it is
+        // asked, and showing one of them makes the other look wrong.
         [DllImport(DllName, ExactSpelling = true)]
         private static extern int nvmlDeviceGetEnforcedPowerLimit(IntPtr device, out uint milliwatts);
+
+        // The board's configured TGP, without Dynamic Boost. This one does not move, so
+        // it is the half of the pair that can always be stated.
+        [DllImport(DllName, ExactSpelling = true)]
+        private static extern int nvmlDeviceGetPowerManagementDefaultLimit(IntPtr device, out uint milliwatts);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct Utilization { public uint Gpu; public uint Memory; }
@@ -235,20 +245,29 @@ namespace OmenMon.Driver {
         // this machine it reads 80 W with cTGP and PPAB off and 140 W with them on, and
         // the fan profile is what sets them — so the figure moves with the profile, not
         // with the Windows power mode beside it.
-        public static bool TryGetGpuPowerLimit(out int watts) {
-            watts = 0;
+        // Both halves of the answer: the configured TGP, and the ceiling with Dynamic
+        // Boost. Either may be zero if that particular call fails; the caller decides
+        // what it can say with what it got.
+        //
+        // Reporting one number was the mistake this replaces. "The limit" read 80 W with
+        // the GPU parked and 105 W with it awake, and both were true — so whichever was
+        // shown made the other look like a bug, and holding the last one read just froze
+        // an arbitrary moment.
+        public static bool TryGetGpuPowerLimits(out int baseWatts, out int boostWatts) {
+
+            baseWatts = 0; boostWatts = 0;
+
             if(!tried)
                 Open();
             if(device == IntPtr.Zero)
                 return false;
+
             try {
 
                 // Through the same liveness check as the temperature, and for the same
-                // reason. A stale session answers every field from what it last recorded,
-                // with NVML_SUCCESS — power is one of the fields measured doing exactly
-                // that (590 W against a real 12.3 W). Reading it without this guard
-                // reported 105 W while nvidia-smi said 80: a number with no relation to
-                // anything, presented as a fact about the hardware.
+                // reason: a stale session answers every field from what it last recorded,
+                // with NVML_SUCCESS. Power is one of the fields measured doing exactly
+                // that — 590 W against a real 12.3 W.
                 if(!IsSessionLive()) {
                     staleCount++;
                     stale = true;
@@ -258,21 +277,21 @@ namespace OmenMon.Driver {
                 stale = false;
 
                 uint mw;
-                int rc = nvmlDeviceGetEnforcedPowerLimit(device, out mw);
+                if(nvmlDeviceGetPowerManagementDefaultLimit(device, out mw) == Success)
+                    baseWatts = Sane(mw);
+                if(nvmlDeviceGetEnforcedPowerLimit(device, out mw) == Success)
+                    boostWatts = Sane(mw);
 
-                if(rc != Success || mw == 0)
-                    return false;
-
-                int value = (int) ((mw + 500) / 1000);
-                if(value <= 0 || value > 400)
-                    return false;
-
-                watts = value;
-                return true;
+                return baseWatts > 0 || boostWatts > 0;
 
             } catch {
                 return false;
             }
+        }
+
+        private static int Sane(uint milliwatts) {
+            int w = (int) ((milliwatts + 500) / 1000);
+            return w > 0 && w <= 400 ? w : 0;
         }
 
         public static bool TryGetGpuTemperature(out int celsius) {

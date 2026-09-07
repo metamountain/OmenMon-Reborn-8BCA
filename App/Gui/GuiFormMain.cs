@@ -449,7 +449,7 @@ namespace OmenMon.AppGui {
         private string pwrWinMode, pwrCharacter;
         private byte pwrPl1, pwrPl2, pwrPl4;
         private bool pwrWinOk, pwrShown;
-        private int pwrGpuTick, pwrGpuWatts;
+        private int pwrGpuTick, pwrGpuBase, pwrGpuBoost;
 
         // The GPU limit is a live value, and the panel was showing it as a fixed one.
         //
@@ -474,27 +474,33 @@ namespace OmenMon.AppGui {
             this.pwrPl1 = pl1; this.pwrPl2 = pl2; this.pwrPl4 = pl4;
             this.pwrWinOk = winOk; this.pwrShown = true;
             // Both processors' limits, because a "power mode" that only states the CPU's
-            // is half the answer — on this machine the GPU's ceiling moves between 80 and
-            // 140 W and is the larger number of the two.
+            // is half the answer — the GPU's ceiling is the larger number of the two.
             //
-            // The GPU figure is read from NVML rather than derived from the cTGP/PPAB
-            // flags, and it is labelled with what sets it: the fan profile, not the mode
-            // selected here. Those are genuinely different controls and showing them in
-            // one block without saying so would imply the buttons above change both.
-            // Hold the last figure that was actually read.
+            // Both of the GPU's, too. It has a configured TGP and a higher ceiling that
+            // Dynamic Boost can reach, and the single figure shown before was whichever
+            // happened to be read first: 80 W with the card parked, 105 W with it awake,
+            // both true. Stating one made the other look like a bug — and it was reported
+            // as one. Neither of these moves, so both can simply be said.
             //
-            // Re-reading it live was right — the limit moves with Dynamic Boost — but a
-            // parked GPU fails the NVML liveness check, so the honest "unavailable"
-            // replaced a perfectly good number every time the machine went idle, which is
-            // most of the time. The limit is a configured ceiling rather than a
-            // measurement: the last one read is still true while the GPU sleeps.
-            int gpuW;
-            if(OmenMon.Driver.Nvml.TryGetGpuPowerLimit(out gpuW))
-                this.pwrGpuWatts = gpuW;
+            // Read from NVML rather than derived from the cTGP/PPAB flags, which say
+            // which knobs are on rather than what they came to. Held across a parked GPU:
+            // the values are configuration, not measurements, so the last ones read stay
+            // true while the card sleeps and the NVML liveness check fails.
+            int baseW, boostW;
+            if(OmenMon.Driver.Nvml.TryGetGpuPowerLimits(out baseW, out boostW)) {
+                if(baseW > 0) this.pwrGpuBase = baseW;
+                if(boostW > 0) this.pwrGpuBoost = boostW;
+            }
 
-            string gpuLine = this.pwrGpuWatts > 0
-                ? string.Format("GPU limit: {0} W — set by the fan profile", this.pwrGpuWatts)
-                : "GPU limit: not read yet";
+            string gpuLine;
+            if(this.pwrGpuBase > 0 && this.pwrGpuBoost > this.pwrGpuBase)
+                gpuLine = string.Format("GPU limits: {0} W base · {1} W with Dynamic Boost",
+                    this.pwrGpuBase, this.pwrGpuBoost);
+            else if(this.pwrGpuBase > 0 || this.pwrGpuBoost > 0)
+                gpuLine = string.Format("GPU limit: {0} W",
+                    Math.Max(this.pwrGpuBase, this.pwrGpuBoost));
+            else
+                gpuLine = "GPU limit: not read yet";
 
             this.LblPwrHint.Text = string.Format(
                 "Windows power mode: {0}{1}\nCPU limits: {2} W sustained · {3} W boost · {4} W peak\n{5}\n{6}",
