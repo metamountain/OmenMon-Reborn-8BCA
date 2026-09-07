@@ -625,22 +625,60 @@ namespace OmenMon.AppGui {
             int before = Hw.EcLockTimeoutCount;
             bool wasQuiet = Hw.EcLockQuiet;
             Hw.EcLockQuiet = true;
+
+            // Applying touches the EC and the BIOS, and every one of those calls can
+            // retry inside Hw.EcRequest for EcMutexTotalTimeout before it gives up. On a
+            // machine where HP's own services are also holding the lock that is seconds,
+            // and this runs on the UI thread, so say so with the cursor rather than
+            // letting the window look hung.
+            Cursor previous = this.Cursor;
+            this.Cursor = Cursors.WaitCursor;
+
             try {
 
                 ApplyFanSettings(sender, e);
 
-                if(Hw.EcLockTimeoutCount != before) {
-                    System.Threading.Thread.Sleep(120);
-                    before = Hw.EcLockTimeoutCount;
+                // Retry on a timer rather than Thread.Sleep(120) followed by a second
+                // synchronous pass. That slept on the UI thread and then blocked it again
+                // for a whole second apply — up to twice the worst case, with the message
+                // pump stopped for all of it. The retry is worth keeping; blocking for it
+                // is not.
+                if(Hw.EcLockTimeoutCount != before)
+                    RetryFanSettingsShortly(sender, e);
+
+            } finally {
+                this.Cursor = previous;
+                Hw.EcLockQuiet = wasQuiet;
+            }
+
+        }
+
+        // One deferred re-apply, on the UI thread but through the message pump, so the
+        // window keeps painting and responding in between
+        private void RetryFanSettingsShortly(object sender, EventArgs e) {
+
+            var timer = new System.Windows.Forms.Timer { Interval = 150 };
+            timer.Tick += delegate {
+
+                timer.Stop();
+                timer.Dispose();
+
+                bool wasQuiet = Hw.EcLockQuiet;
+                Hw.EcLockQuiet = true;
+                int before = Hw.EcLockTimeoutCount;
+                try {
                     ApplyFanSettings(sender, e);
                     if(Hw.EcLockTimeoutCount != before)
                         UpdateSysMsg("Embedded controller busy — retrying on the next tick."
                             + " Close HP's own software if this persists.");
+                } catch(Exception ex) {
+                    Config.ErrorLog("GuiFormMain.RetryFanSettings", ex);
+                } finally {
+                    Hw.EcLockQuiet = wasQuiet;
                 }
 
-            } finally {
-                Hw.EcLockQuiet = wasQuiet;
-            }
+            };
+            timer.Start();
 
         }
 

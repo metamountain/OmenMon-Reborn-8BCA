@@ -228,10 +228,22 @@ namespace OmenMon.AppGui {
             // budgeted first and the graphs divide whatever is left. That keeps the
             // constraint true by construction: move a control and the graphs absorb it,
             // instead of the window silently growing past the screen again.
-            // 1080 on a 1112 px work area. 960 was set when the sections were smaller and
-            // left 32 px more headroom than the window needs; every pixel of it was coming
-            // out of the graphs, which are the only elastic thing here.
+            // How tall the window may be on screen. The layout is no longer required to
+            // fit inside it: the form scrolls (see the end of this method), so the graphs
+            // are sized to be readable and the window shows as much of the result as the
+            // display has room for.
+            //
+            // This is the resolution of a constraint that could not be satisfied. A
+            // keyboard picture that spans the content width is 177 px tall; two graphs
+            // worth looking at are ~240 px each; the four fixed sections are 640. That is
+            // 1375 px of content against 1112 px of work area, and no arrangement of
+            // them fits. Squeezing the graphs was what "too squeezed" meant, and shrinking
+            // the keyboard was what broke its alignment with the margin. Scrolling is the
+            // only answer that does not sacrifice one of them.
             const int MAX_WINDOW_H = 1080;
+
+            // What the graphs get, rather than what is left over after everything else
+            const int H_GRAPH = 240;
 
             const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
             const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
@@ -248,7 +260,11 @@ namespace OmenMon.AppGui {
             // The control keeps the full content width and Zoom centres the picture in
             // it. The empty side bands are harmless now that GuiKbd.SetZone maps clicks
             // against the drawn rectangle and ignores anything outside it.
-            const int H_KBDPIC = 120;
+            // Full content width, so the picture's edges sit on the same 10 px margin as
+            // every caption, rule and control. Its height follows from the native aspect
+            // of Resources\Keyboard.png and is not a free choice.
+            const int KBD_IMG_W = 1200, KBD_IMG_H = 393;         // Resources\Keyboard.png
+            const int H_KBDPIC = (W - 2 * GuiTheme.Pad) * KBD_IMG_H / KBD_IMG_W;
 
             // Picture at HDR + 32, then 8 px, the swatch row, the preset row and the hex
             // field (96 px in total), then the section's own bottom margin
@@ -260,18 +276,11 @@ namespace OmenMon.AppGui {
             int chrome = SystemInformation.CaptionHeight
                 + 2 * SystemInformation.FixedFrameBorderSize.Height;
 
-            // 7 gaps (above each of the six sections, plus one below the last); the
-            // constant 52 is the fixed part of the two graph sections -- 2 * HDR for
-            // their headers, less the 4 px the chart sits above its group bottom, plus
-            // the 64 px of profile row, readout row and entry fields above the curve
-            int graphBudget = MAX_WINDOW_H - chrome - 7 * GAP - 2 * HDR - 60
-                - H_TMP - H_PWR - H_KBD - H_SYS;
-
-            // Never collapse the graphs to nothing: if the fixed sections ever grow past
-            // the budget, overflow the window rather than ship two unreadable slivers
-            if(graphBudget < 192) graphBudget = 192;
-            int hChart = graphBudget / 2;
-            int hCurve = graphBudget - hChart;
+            // Both graphs get a real height instead of dividing the remainder. They were
+            // the only elastic thing in a window that had to fit a screen, so every time
+            // another section grew they paid for it — twice today, down to 96 px each.
+            int hChart = H_GRAPH;
+            int hCurve = H_GRAPH;
 
 #region Section: Graph
             // Pulled up into the caption band to give the plot height, but never above the
@@ -375,13 +384,21 @@ namespace OmenMon.AppGui {
             // (+ copy, − delete, ✎ rename), then apply, then save, then the countdown.
             // The three single-glyph buttons stay narrow so a rename button fits without
             // pushing the countdown off the right edge.
-            mkFanBtn(this.BtnProfAdd, "+", 244, 28);
-            mkFanBtn(this.BtnProfDel, "−", 280, 28);
-            mkFanBtn(this.BtnProfRen, "✎", 316, 28);
+            // Laid out left to right on the shared gutter rather than at five written-down
+            // x values. Those were 244 / 280 / 316 / 352 / 428, spaced 36, 36, 36 and 76
+            // — three even steps and then whatever was left — and they assumed Apply was
+            // 68 px wide. Sizing Apply from its text moved its right edge to 427, one
+            // pixel from Save curve at 428, which is what "not centred" was: the two
+            // buttons had no gutter between them while everything else in the row did.
+            int fx = COL2 + 156 + GUT;                       // after the profile combo
+            foreach(Button b in new Button[] {
+                this.BtnProfAdd, this.BtnProfDel, this.BtnProfRen }) {
+                mkFanBtn(b, b == this.BtnProfAdd ? "+" : b == this.BtnProfDel ? "−" : "✎", fx, 28);
+                fx += 28 + GUT;
+            }
             this.Tip.SetToolTip(this.BtnProfAdd, "Copy this profile under a new name — the copy is editable.");
             this.Tip.SetToolTip(this.BtnProfDel, "Delete this profile. The three reference profiles cannot be deleted.");
             this.Tip.SetToolTip(this.BtnProfRen, "Rename this profile. The three reference profiles cannot be renamed.");
-            mkFanBtn(this.BtnCurveEdit, "Save curve", 428, 78);
 
             this.BtnFanSet.HighlightColorDark = GuiTheme.Accent;
             this.BtnFanSet.HighlightColorLight = GuiTheme.Accent;
@@ -488,6 +505,16 @@ namespace OmenMon.AppGui {
                 rb.FlatAppearance.BorderSize = 1;
                 rb.FlatAppearance.CheckedBackColor = GuiTheme.Accent;
                 rb.FlatAppearance.MouseOverBackColor = GuiTheme.PanelHi;
+
+                // Selection is an inversion, not a colour: light ground, dark text.
+                // FlatAppearance has a CheckedBackColor but no CheckedForeColor, so the
+                // text has to be flipped by hand — without this the label would be
+                // near-white on the near-white checked ground and simply disappear.
+                EventHandler invert = delegate {
+                    rb.ForeColor = rb.Checked ? GuiTheme.OnAccent : GuiTheme.Text;
+                };
+                rb.CheckedChanged += invert;
+                invert(rb, EventArgs.Empty);
             };
             mkPwr(this.RdoPwrEco,    "Eco",         0);
             mkPwr(this.RdoPwrBal,    "Balanced",    1);
@@ -555,11 +582,15 @@ namespace OmenMon.AppGui {
 #endregion
 
 #region Section: Keyboard
+            // Width comes from the control, not from a number written here. The 90 px this
+            // replaces was measured once, against a different font, and "Backlight" was
+            // rendering as "Backlig". Nothing downstream assumes a width either: the zone
+            // combo starts after whatever the checkbox turned out to need.
             this.ChkKbdBacklight.Location = new Point(PAD, HDR + 2);
             this.ChkKbdBacklight.AutoCheck = false;
-            this.ChkKbdBacklight.Size = new Size(90, 24);   // "Backlight" needs this much
-            const int KBDX = PAD + 90 + GUT;                // where the zone combo starts
             this.ChkKbdBacklight.Text = "Backlight";
+            this.ChkKbdBacklight.AutoSize = true;
+            int KBDX = PAD + this.ChkKbdBacklight.PreferredSize.Width + GUT;
 
             // Which zone the R/G/B sliders apply to (index 0 = All = uniform colour)
             this.CmbKbdZone.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -740,7 +771,23 @@ namespace OmenMon.AppGui {
             this.AutoScaleMode = AutoScaleMode.None;
             this.AutoSize = false;
             // Same 10 px below the last section as above the first and beside them all
-            this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GuiTheme.Pad);
+            // The content is as tall as it needs to be; the window shows what fits and
+            // scrolls the rest. Everything here is absolutely positioned, which AutoScroll
+            // handles by itself once it knows how far the content extends.
+            //
+            // Without this the six sections had to be squeezed into one screen, and the
+            // graphs — the only elastic thing — absorbed every increase anywhere else.
+            int contentH = this.GrpSys.Bottom + GuiTheme.Pad;
+            int visibleH = Math.Min(contentH, MAX_WINDOW_H - chrome);
+
+            this.AutoScroll = true;
+            this.AutoScrollMinSize = new Size(0, contentH);
+
+            // Leave room for the scrollbar when there will be one, so a vertical bar
+            // cannot start a horizontal one by covering the right-hand margin
+            this.ClientSize = new Size(
+                W + 2 * GX + (contentH > visibleH ? SystemInformation.VerticalScrollBarWidth : 0),
+                visibleH);
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.HelpButton = true;
             this.Icon = OmenMon.Resources.Icon;

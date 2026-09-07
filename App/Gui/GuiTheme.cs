@@ -16,15 +16,29 @@ namespace OmenMon.AppGui {
 
     internal static class GuiTheme {
 
-        // Palette (zinc-ish dark)
-        public static readonly Color Bg      = Color.FromArgb(0x18, 0x18, 0x1B); // window
-        public static readonly Color Panel   = Color.FromArgb(0x24, 0x24, 0x28); // raised areas / inputs
-        public static readonly Color PanelHi = Color.FromArgb(0x2E, 0x2E, 0x34); // hover
-        public static readonly Color Border  = Color.FromArgb(0x3A, 0x3A, 0x42);
-        public static readonly Color Text    = Color.FromArgb(0xF4, 0xF4, 0xF5); // primary
-        public static readonly Color Muted   = Color.FromArgb(0x9A, 0x9A, 0xA4); // captions / secondary
-        public static readonly Color Accent  = Color.FromArgb(0x3B, 0x82, 0xF6); // blue
-        public static readonly Color Warm    = Color.FromArgb(0xF5, 0x9E, 0x0B); // amber
+        // Monochrome. Colour is reserved for the places where it carries meaning that
+        // grey cannot: the graph series (four lines that must be told apart at a glance)
+        // and the keyboard swatch (which *is* the colour it shows). Everything else —
+        // panels, borders, buttons, captions, selection — is neutral.
+        //
+        // The palette was zinc-tinted rather than neutral (0x18181B, 0x24242 8, 0x3A3A42:
+        // every step carried a little blue) with a blue accent and an amber warning on
+        // top. Selection now reads as inversion — light ground, dark text — which is
+        // unmistakable without a hue and survives being looked at on a bad panel.
+        public static readonly Color Bg      = Color.FromArgb(0x18, 0x18, 0x18); // window
+        public static readonly Color Panel   = Color.FromArgb(0x24, 0x24, 0x24); // raised areas / inputs
+        public static readonly Color PanelHi = Color.FromArgb(0x2E, 0x2E, 0x2E); // hover
+        public static readonly Color Border  = Color.FromArgb(0x3C, 0x3C, 0x3C);
+        public static readonly Color Text    = Color.FromArgb(0xF4, 0xF4, 0xF4); // primary
+        public static readonly Color Muted   = Color.FromArgb(0x9A, 0x9A, 0x9A); // captions / secondary
+
+        // Selected / active: the inverse of the window, not a colour
+        public static readonly Color Accent  = Color.FromArgb(0xF4, 0xF4, 0xF4);
+        public static readonly Color OnAccent = Color.FromArgb(0x18, 0x18, 0x18);
+
+        // Kept so the few genuinely warning-shaped callers still compile and still stand
+        // out, but as near-white rather than amber
+        public static readonly Color Warm    = Color.FromArgb(0xE8, 0xE8, 0xE8);
 
         // Pure black caption so the title bar merges into the window instead of
         // being the one bright strip on screen.
@@ -123,15 +137,19 @@ namespace OmenMon.AppGui {
                 case GroupBox g:
                     g.ForeColor = Muted;
                     g.BackColor = Bg;
-                    // A section caption is body size in SemiBold, not a fourth size.
-                    // Weight carries the hierarchy; adding 1.5 pt as well made the
-                    // captions read as a different scale from everything under them.
-                    // Set here rather than per-section so all six cannot drift apart.
-                    try {
-                        if(g.Font == null || g.Font.FontFamily.Name != FaceUiBold)
-                            g.Font = Ui(FontBody, true);
-                    } catch { }
-                    // Replace the etched 3-D frame with a single hairline under the caption.
+
+                    // Do NOT set g.Font here.
+                    //
+                    // A section caption is body size in SemiBold — weight carries the
+                    // hierarchy, not a fourth size — but assigning that to the GroupBox
+                    // set it on every control inside it too, because WinForms children
+                    // inherit their parent's font unless they have one of their own. The
+                    // whole window was rendering in SemiBold, every label and checkbox
+                    // was wider than the width it had been given, and text was clipped.
+                    // "Backlight" losing its last letters is what this was.
+                    //
+                    // The caption is the only thing that wants the weight, and
+                    // PaintGroupBox draws the caption, so it makes its own font there.
                     g.Paint -= PaintGroupBox;
                     g.Paint += PaintGroupBox;
                     break;
@@ -236,8 +254,11 @@ namespace OmenMon.AppGui {
         private static void PaintGroupBox(object sender, PaintEventArgs e) {
             var g = (GroupBox) sender;
             e.Graphics.Clear(g.BackColor);
+            // The caption carries the weight, and only the caption — see ApplyTo, where
+            // setting this on the GroupBox itself put every child control in SemiBold
+            using(var f = Ui(FontBody, true))
             using(var br = new SolidBrush(Muted))
-                e.Graphics.DrawString(g.Text, g.Font, br, Pad, 0);
+                e.Graphics.DrawString(g.Text, f, br, Pad, 0);
             using(var pen = new Pen(Border))
                 e.Graphics.DrawLine(pen, Pad, CaptionRuleY, g.Width - Pad, CaptionRuleY);
         }

@@ -88,11 +88,16 @@ namespace OmenMon.Hardware.Platform {
         // One level - 100 rpm - per tick, in both the CPU and GPU untrusted ramps
         private const int UntrustedRampStep = 1;
 
-        // Attempts at the countdown write within a single pass. Three, because the write
-        // is one byte and each attempt already retries internally for EcMutexTotalTimeout
-        // — so this is a third chance at the lock, not a busy loop, and it is bounded so
-        // that a genuinely stuck EC cannot hold the monitor thread here indefinitely.
-        private const int CountdownWriteAttempts = 3;
+        // Attempts at the countdown write within a single pass.
+        //
+        // Two, not three, and the reason is latency rather than reliability. Each attempt
+        // already contains EcMutexTotalTimeout (2500 ms) of internal retry inside
+        // Hw.EcRequest, and SetCountdown is a write plus a read-back, so an attempt can
+        // cost five seconds on a contended EC. Three of those is fifteen — and this runs
+        // inside FanProgram.Update(), which ApplyFanSettings calls on the UI thread when
+        // the user picks a profile. That was a visibly stuck window. A second attempt is
+        // worth having; a third buys almost nothing and costs another five seconds.
+        private const int CountdownWriteAttempts = 2;
 
         // Consecutive dropped countdown writes, for the log line that reports recovery
         private int countdownWriteFailures;
