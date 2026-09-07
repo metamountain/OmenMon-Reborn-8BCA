@@ -50,6 +50,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- **Fan levels wind down at a limited rate and rise without one.** A curve is a step
+  function with no hysteresis, so crossing a threshold moved the fan the whole distance
+  between two rows at once — audible, and unlike anything the firmware does by itself.
+  Falls are now limited to half a level per second (maximum to idle takes a little over
+  a minute); rises are deliberately not limited, because a measured 78 → 92 °C in twelve
+  seconds makes any delay to a rise dangerous. The rate is per second rather than per
+  tick, since the monitor thread has been observed 11–27 s late under load.
+- **Fan readings are checked against the commanded level, not the previous reading.**
+  On this board rpm is derived from the level, so a single bad `GetFanLevel` prints as
+  two agreeing numbers and looks exactly like a stopped fan. Divergences are logged as
+  `Monitor.FanLevelDiverged` rather than drawn as a cliff. The check follows
+  `nbfc-linux`, which treats the same divergence as evidence the EC did not take a write.
 - **The Default, Silent and Performance curves are read-only.** They are the references
   the rest of this work is measured against; `+` makes an editable copy for experiments.
 - **Fan curves are anchored at both ends of the axis.** A curve stored as 36–87 °C drew a

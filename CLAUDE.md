@@ -397,14 +397,78 @@ the curve would never choose**: at 21:29:29, `cpu_lvl` 44 → 15 (4400 → 1500 
 the CPU at 90 °C, then 94 °C, recovering to level 45 at 21:29:44 as the countdown read
 120 again. Read the level column, not the countdown column.
 
+### A fan reading that looks like a stopped fan is usually a bad read
+
+2026-09-07 19:26:04, during a CPU render: the level read **2** (200 rpm) with the
+previous sample at 45 and the next at 46, while the CPU was at 78 °C. It looked exactly
+like the fans stopping under load.
+
+It was one bad `GetFanLevel` answer. Three things say so, and they are the checks worth
+running on any future sighting:
+
+| check | reading | means |
+|---|---|---|
+| `cpu_pct` / `gpu_pct` in the same row | 75 / 89, normal | not a failed EC batch — those zero together |
+| `countdown` | 120 | the firmware has not taken the fans |
+| `cpu_rpm` vs `cpu_lvl` | exactly `lvl x 100` | **not corroboration** |
+
+That last one is the trap. On this board rpm is `BiosLevelMirror` — derived from the
+level, not measured — so a single misread prints as **two agreeing numbers**, which is
+exactly what a real fan stop would look like. Readings are now compared against what
+`FanProgram` actually commanded (`GetCommandedLevels()`), not against the previous
+reading, and a divergence is logged as `Monitor.FanLevelDiverged`.
+
+### The fans wind down slowly and speed up instantly, deliberately
+
+`FanProgram.EaseDown()` limits how fast a level may **fall** — half a level per second,
+so maximum to idle takes a little over a minute — and does not limit rises at all.
+
+The asymmetry is the point. A curve is a step function with no hysteresis, so crossing a
+threshold moves the fan the whole gap between two rows at once; falling that abruptly is
+audible and unlike anything the firmware does by itself. But at 19:26 the CPU went from
+**78 °C to 92 in a single twelve-second gap**, so anything that delays a rise is
+dangerous, while delaying a fall costs a few seconds of noise.
+
+The limit is **per second, not per tick**. Under that render the monitor thread was 11 to
+27 seconds late; a per-tick step would have stretched the wind-down to a quarter of an
+hour exactly when the machine is busy.
+
+**Rejected: smoothing the temperature instead.** `nbfc-linux` filters the temperature
+with a symmetric moving average before the curve lookup
+(`src/temperature_filter.c`). Symmetric is wrong here for the same reason the rise is
+unlimited — it would slow the response to a spike as much as to a fall.
+
+### What other projects do, and what was taken from them
+
+`nbfc-linux` (https://github.com/nbfc-linux/nbfc-linux) is the closest comparable, and
+worth reading before inventing a safety mechanism here:
+
+- **Divergence detection** — `if (fabs(current - target) > 15) re_init_required` and it
+  re-applies its register writes, treating the mismatch as evidence the EC did not take
+  the write. **Taken.** `SetFanLevel` here is already unconditional every tick so the
+  re-assertion happens anyway; what was missing was noticing and logging it.
+- **Critical temperature forces 100 %**, leaving the state only below
+  `criticalTemperature - criticalTemperatureOffset`. OmenMon has this as Thermal Panic —
+  see the open item below.
+- **Fans reset to firmware control on clean exit** (`Fan_ECReset`). Here that is the
+  deploy script's `FanMode=Default`, with the `0x63` countdown covering the unclean case.
+
 ## Still open
 
+- **`ThermalPanicEnabled` is `false` in `OmenMon.xml`.** The threshold is 90 °C and the
+  hysteresis 5. On 2026-09-07 the CPU held **90-92 °C for about seventy seconds** during
+  a render with this switched off — the one mechanism that forces the fans regardless of
+  curve or tick rate. Nothing else in the program will cap that. Turning it on is a
+  config edit; it has not been made because it changes fan behaviour and that is the
+  user's call.
 - **Monitor thread starves under sustained full load** — 2 telemetry samples in 15
   minutes observed. Thread priority is now `AboveNormal` and `TelemetryEvery` is 8
   (was 30). Measured after both: at 2026-09-06 21:22 the telemetry interval was still
-  44-47 s against a nominal 8, so the loop was running about 5x slow. That is survivable
-  now that the countdown no longer depends on the pass finishing, but it still thins
-  `CheckThermalPanic`.
+  44-47 s against a nominal 8, and at 2026-09-07 19:20-19:27 the gaps were 11-27 s
+  against a nominal 8. The countdown no longer depends on the pass finishing, but the
+  **fan curve does**: a 24 s gap is 24 s of no curve update while the CPU climbs, which
+  is why the fan reached maximum only after the temperature had peaked. Moving the
+  program tick off this thread is the obvious fix and has not been done.
 - **No independent CPU cross-check is available.** `MSAcpi_ThermalZoneTemperature` is
   access-denied unelevated, and running Core Temp breaks this program's own SMN read
   (see the contention note above). Verification currently depends on one source.
