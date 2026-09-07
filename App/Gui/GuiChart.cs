@@ -69,9 +69,15 @@ namespace OmenMon.AppGui {
             if(IsHandleCreated) Invalidate();
         }
 
+        // Width of the left scale gutter, shared with GuiCurveEditor
+        internal const int AxisLeft = 44;
+
         // Plot rectangle, leaving room for the three axes and the legend row.
         private Rectangle Plot {
-            get { return new Rectangle(40, 26, Math.Max(10, Width - 40 - 52), Math.Max(10, Height - 26 - 20)); }
+            // Left inset is shared with GuiCurveEditor so the two stacked graphs line
+            // up: the temperature scale here and the rpm scale below start on the same
+            // pixel column, and both sit hard against the section margin.
+            get { return new Rectangle(AxisLeft, 26, Math.Max(10, Width - AxisLeft - 52), Math.Max(10, Height - 26 - 20)); }
         }
 
         protected override void OnPaint(PaintEventArgs e) {
@@ -93,7 +99,7 @@ namespace OmenMon.AppGui {
                     g.DrawLine(gridPen, p.Left, y, p.Right, y);
                     string s = t + "°";
                     SizeF sz = g.MeasureString(s, fAx);
-                    g.DrawString(s, fAx, brMuted, p.Left - sz.Width - 4, y - sz.Height / 2);
+                    g.DrawString(s, fAx, brMuted, p.Left - sz.Width - 5, y - sz.Height / 2);
                 }
                 // ---- right axis: fan speed --------------------------------------
                 for(int r = RMin; r <= RMax; r += 2000) {

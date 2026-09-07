@@ -53,6 +53,17 @@ namespace OmenMon.AppGui {
         private Label LblFan1Rte;
         private Label LblFan1Val;
         private Label LblFanCountdown;
+        private Label LblCurveInfo;
+        private Button BtnProfRen;
+        private NumericUpDown NumCurveTemp, NumCurveRpm;
+
+        // Shown when the pointer is not over the curve
+        // Shown while one of the three reference curves is selected
+        private const string LockedHelpText =
+            "Reference curve - read-only. Press + to make an editable copy.";
+
+        private const string CurveHelpText =
+            "Left-click to add a point · drag to move · right-click to remove";
         private Label LblFanUnitRte;
         private Label LblFanUnitVal;
         private Label LblHdrRpm;
@@ -137,6 +148,10 @@ namespace OmenMon.AppGui {
             this.LblFan1Rte = new Label();
             this.LblFan1Val = new Label();
             this.LblFanCountdown = new Label();
+            this.LblCurveInfo = new Label();
+            this.BtnProfRen = new Button();
+            this.NumCurveTemp = new NumericUpDown();
+            this.NumCurveRpm = new NumericUpDown();
             this.LblFanUnitRte = new Label();
             this.LblFanUnitVal = new Label();
             this.LblHdrRpm = new Label();
@@ -183,9 +198,27 @@ namespace OmenMon.AppGui {
 
             const int W = 560;                 // section content width
             const int GX = 16;                 // form left margin
-            const int HDR = 26;                // gap from section top to first control
+            const int HDR = 28;                // gap from section top to first control
+                                               // (clears the 10.5 pt caption and its rule)
             const int GAP = 8;                 // gap between stacked sections
             const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
+
+            // One horizontal grid for the whole window, so nothing is placed by eye.
+            // Every control's left edge is PAD, COL2, or a multiple of GUT from one of
+            // them; every right edge is W - PAD. The magic numbers this replaced put the
+            // profile combo, the keyboard combo and the RGB sliders on four different
+            // left margins, which is what made the window read as restless.
+            const int GUT  = 8;                     // the single gutter between controls
+            const int LBLW = 56;                    // caption column ("Profile", "CPU", ...)
+            const int COL2 = PAD + LBLW + GUT;      // where a caption's control starts
+            const int CONT = W - 2 * PAD;           // full content width inside a section
+
+            // The sensor block is two right-aligned number columns: rpm, then °C on the
+            // right edge. Both the unit caption and the value below it use the same box,
+            // so the digits and their label share one right edge instead of two that
+            // happened to agree.
+            const int RPMW = 166;                   // rpm column, starting at COL2
+            const int TMPX = COL2 + RPMW + GUT;     // °C column, running to W - PAD
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
 
             // The whole window has to fit within MAX_WINDOW_H, title bar included -- six
@@ -210,8 +243,8 @@ namespace OmenMon.AppGui {
             // 7 gaps (above each of the six sections, plus one below the last); the
             // constant 52 is the fixed part of the two graph sections -- 2 * HDR for
             // their headers, less the 4 px the chart sits above its group bottom, plus
-            // the 56 px of profile row and help text above the curve
-            int graphBudget = MAX_WINDOW_H - chrome - 7 * GAP - 2 * HDR - 52
+            // the 64 px of profile row, readout row and entry fields above the curve
+            int graphBudget = MAX_WINDOW_H - chrome - 7 * GAP - 2 * HDR - 60
                 - H_TMP - H_PWR - H_KBD - H_SYS;
 
             // Never collapse the graphs to nothing: if the fixed sections ever grow past
@@ -233,47 +266,47 @@ namespace OmenMon.AppGui {
 #region Section: Sensors (hero readout)
             this.LblHdrRpm.AutoSize = false;
             this.LblHdrRpm.Font = capFont; this.LblHdrRpm.ForeColor = cCap;
-            this.LblHdrRpm.Location = new Point(96, HDR);
-            this.LblHdrRpm.Size = new Size(150, 16);
+            this.LblHdrRpm.Location = new Point(COL2, HDR);
+            this.LblHdrRpm.Size = new Size(RPMW, 16);
             this.LblHdrRpm.TextAlign = ContentAlignment.MiddleRight;
             this.LblHdrRpm.Text = "rpm";
 
             this.LblHdrTmp.AutoSize = false;
             this.LblHdrTmp.Font = capFont; this.LblHdrTmp.ForeColor = cCap;
-            this.LblHdrTmp.Location = new Point(252, HDR);
-            this.LblHdrTmp.Size = new Size(W - PAD - 252, 16);
+            this.LblHdrTmp.Location = new Point(TMPX, HDR);
+            this.LblHdrTmp.Size = new Size(W - PAD - TMPX, 16);
             this.LblHdrTmp.TextAlign = ContentAlignment.MiddleRight;
             this.LblHdrTmp.Text = "°C";
 
             int r0 = HDR + 18, r1 = r0 + 40;
             this.LblFan0Cap.Font = capFont; this.LblFan0Cap.ForeColor = cCap;
             this.LblFan0Cap.Location = new Point(PAD, r0 + 12);
-            this.LblFan0Cap.Size = new Size(60, 30);
+            this.LblFan0Cap.Size = new Size(LBLW, 30);
             this.LblFan0Cap.Text = "CPU";
 
             this.LblFan0Val.Font = heroFont; this.LblFan0Val.ForeColor = cVal;
-            this.LblFan0Val.Location = new Point(78, r0);
-            this.LblFan0Val.Size = new Size(168, 40);
+            this.LblFan0Val.Location = new Point(COL2, r0);
+            this.LblFan0Val.Size = new Size(RPMW, 40);
             this.LblFan0Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblTmp0Val.Font = heroFont; this.LblTmp0Val.ForeColor = cVal;
-            this.LblTmp0Val.Location = new Point(252, r0);
-            this.LblTmp0Val.Size = new Size(W - PAD - 252, 40);
+            this.LblTmp0Val.Location = new Point(TMPX, r0);
+            this.LblTmp0Val.Size = new Size(W - PAD - TMPX, 40);
             this.LblTmp0Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblFan1Cap.Font = capFont; this.LblFan1Cap.ForeColor = cCap;
             this.LblFan1Cap.Location = new Point(PAD, r1 + 12);
-            this.LblFan1Cap.Size = new Size(60, 30);
+            this.LblFan1Cap.Size = new Size(LBLW, 30);
             this.LblFan1Cap.Text = "GPU";
 
             this.LblFan1Val.Font = heroFont; this.LblFan1Val.ForeColor = cVal;
-            this.LblFan1Val.Location = new Point(78, r1);
-            this.LblFan1Val.Size = new Size(168, 40);
+            this.LblFan1Val.Location = new Point(COL2, r1);
+            this.LblFan1Val.Size = new Size(RPMW, 40);
             this.LblFan1Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.LblTmp1Val.Font = heroFont; this.LblTmp1Val.ForeColor = cVal;
-            this.LblTmp1Val.Location = new Point(252, r1);
-            this.LblTmp1Val.Size = new Size(W - PAD - 252, 40);
+            this.LblTmp1Val.Location = new Point(TMPX, r1);
+            this.LblTmp1Val.Size = new Size(W - PAD - TMPX, 40);
             this.LblTmp1Val.TextAlign = ContentAlignment.MiddleRight;
 
             this.PnlTmpHidden.Location = new Point(0, 0);
@@ -305,17 +338,26 @@ namespace OmenMon.AppGui {
 
             MakeMini("Profile", new Point(PAD, fa + 3), capFont, this.GrpFan);
             this.CmbFanProg.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbFanProg.Location = new Point(72, fa);
-            this.CmbFanProg.Size = new Size(164, 24);
+            this.CmbFanProg.Location = new Point(COL2, fa);
+            this.CmbFanProg.Size = new Size(156, 24);
 
             Action<Button, string, int, int> mkFanBtn = (b, t, x, w2) => {
                 b.Text = t; b.Location = new Point(x, fa - 1); b.Size = new Size(w2, 26);
                 b.FlatStyle = FlatStyle.Flat; b.BackColor = GuiTheme.PanelHi;
                 b.ForeColor = GuiTheme.Text; b.FlatAppearance.BorderColor = GuiTheme.Border;
             };
-            mkFanBtn(this.BtnProfAdd, "+", 242, 28);
-            mkFanBtn(this.BtnProfDel, "−", 272, 28);
-            mkFanBtn(this.BtnCurveEdit, "Save curve", 398, 96);
+            // The profile row, laid out left to right on the shared 8 px gutter:
+            // caption, the profile itself, then the three things you can do to it
+            // (+ copy, − delete, ✎ rename), then apply, then save, then the countdown.
+            // The three single-glyph buttons stay narrow so a rename button fits without
+            // pushing the countdown off the right edge.
+            mkFanBtn(this.BtnProfAdd, "+", 244, 28);
+            mkFanBtn(this.BtnProfDel, "−", 280, 28);
+            mkFanBtn(this.BtnProfRen, "✎", 316, 28);
+            this.Tip.SetToolTip(this.BtnProfAdd, "Copy this profile under a new name — the copy is editable.");
+            this.Tip.SetToolTip(this.BtnProfDel, "Delete this profile. The three reference profiles cannot be deleted.");
+            this.Tip.SetToolTip(this.BtnProfRen, "Rename this profile. The three reference profiles cannot be renamed.");
+            mkFanBtn(this.BtnCurveEdit, "Save curve", 428, 78);
 
             this.BtnFanSet.HighlightColorDark = GuiTheme.Accent;
             this.BtnFanSet.HighlightColorLight = GuiTheme.Accent;
@@ -323,26 +365,61 @@ namespace OmenMon.AppGui {
             this.BtnFanSet.HighlightRadius = 2;
             this.BtnFanSet.ForeColor = GuiTheme.Text;
             this.BtnFanSet.BackColor = GuiTheme.PanelHi;
-            this.BtnFanSet.Location = new Point(310, fa - 1);
-            this.BtnFanSet.Size = new Size(80, 26);
+            this.BtnFanSet.Location = new Point(352, fa - 1);
+            this.BtnFanSet.Size = new Size(68, 26);
             this.BtnFanSet.Text = "Apply";
 
             this.LblFanCountdown.Font = capFont; this.LblFanCountdown.ForeColor = cCap;
-            this.LblFanCountdown.Location = new Point(W - PAD - 44, fa + 3);
-            this.LblFanCountdown.Size = new Size(44, 20);
+            this.LblFanCountdown.Location = new Point(W - PAD - 30, fa + 3);
+            this.LblFanCountdown.Size = new Size(30, 20);
             this.LblFanCountdown.TextAlign = ContentAlignment.MiddleRight;
 
-            // How the curve editor works — stated in the section, not hidden in a tooltip
-            Label curveHelp = new Label {
-                AutoSize = false, Font = capFont, ForeColor = GuiTheme.Muted,
-                Location = new Point(PAD, fa + 30), Size = new Size(W - 2 * PAD, 18),
-                BackColor = Color.Transparent,
-                Text = "Left-click the graph to add a point · drag to move it · right-click a point to remove it"
+            // The row above the curve does two jobs: it says what the pointer is over,
+            // and it lets the same point be typed in exactly.
+            //
+            // Dragging a handle is quick but cannot land on 65 °C / 3200 rpm precisely,
+            // and until now the only feedback was the shape of the line. The readout
+            // replaces a static instruction that did not fit on one line anyway — it was
+            // rendering as "... right-click a point to" with the rest cut off.
+            // The rpm box holds four digits plus the spinner arrows, so it is wider than
+            // the temperature box next to it - at a shared 52 px "5800" was clipped.
+            const int PRPMW = 70;
+            const int PTMPW = 54;
+            const int PUNITW = 26;
+            const int PRPMX = W - PAD - PRPMW;
+            const int PTMPX = PRPMX - GUT - PUNITW - GUT - PTMPW;
+
+            this.LblCurveInfo.AutoSize = false;
+            this.LblCurveInfo.Font = capFont;
+            this.LblCurveInfo.ForeColor = GuiTheme.Muted;
+            this.LblCurveInfo.Location = new Point(PAD, fa + 32);
+            this.LblCurveInfo.Size = new Size(PTMPX - GUT - PAD, 20);
+            this.LblCurveInfo.TextAlign = ContentAlignment.MiddleLeft;
+            this.LblCurveInfo.Text = CurveHelpText;
+            this.GrpFan.Controls.Add(this.LblCurveInfo);
+
+            Action<NumericUpDown, int, int, int, int> mkPtNum = (n, x, w, lo, hi) => {
+                n.Minimum = lo; n.Maximum = hi; n.Increment = 1;
+                n.Location = new Point(x, fa + 30);
+                n.Size = new Size(w, 24);
+                n.TextAlign = HorizontalAlignment.Center;
+                n.BorderStyle = BorderStyle.FixedSingle;
+                n.BackColor = GuiTheme.Panel;
+                n.ForeColor = GuiTheme.Text;
+                n.Enabled = false;
+                this.GrpFan.Controls.Add(n);
             };
-            this.GrpFan.Controls.Add(curveHelp);
+            mkPtNum(this.NumCurveTemp, PTMPX, PTMPW, 30, 95);
+            mkPtNum(this.NumCurveRpm, PRPMX, PRPMW, Config.FanLevelMin * 100, Config.FanLevelMax * 100);
+            this.NumCurveRpm.Increment = 100;
+            MakeMiniRight("°C", new Point(PTMPX + PTMPW, fa + 33), PUNITW, capFont, this.GrpFan);
+            this.Tip.SetToolTip(this.NumCurveTemp,
+                "Click a point on the curve, then type its exact temperature here.");
+            this.Tip.SetToolTip(this.NumCurveRpm,
+                "The selected point's fan speed in rpm, in steps of 100 — the hardware's own resolution.");
 
             // Inline curve editor, drawn like the history graph above
-            this.Curve.Location = new Point(PAD, fa + 50);
+            this.Curve.Location = new Point(PAD, fa + 58);
             this.Curve.Size = new Size(W - 2 * PAD, hCurve);
 
             // Everything else the fan logic still reads is kept alive but off-screen:
@@ -358,9 +435,10 @@ namespace OmenMon.AppGui {
             this.GrpFan.Controls.Add(this.BtnProfDel);
             this.GrpFan.Controls.Add(this.BtnFanSet);
             this.GrpFan.Controls.Add(this.BtnCurveEdit);
+            this.GrpFan.Controls.Add(this.BtnProfRen);
             this.GrpFan.Controls.Add(this.LblFanCountdown);
             this.GrpFan.Controls.Add(this.Curve);
-            this.GrpFan.Size = new Size(W, fa + hCurve + 56);
+            this.GrpFan.Size = new Size(W, fa + hCurve + 64);
             this.GrpFan.TabStop = false;
             this.GrpFan.Text = "Fan profile";
 #endregion
@@ -393,26 +471,38 @@ namespace OmenMon.AppGui {
             // power mode are derived from it so the three can never disagree.
             // 25..54 W: the 7840HS cTDP window (45 W stock); the BIOS clamps above 54,
             // and below ~25 the part throttles without getting meaningfully cooler.
-            MakeMini("Sustained", new Point(W - 196, HDR + 42), capFont, this.GrpPwr);
+            // The spinner sits on the right edge; its caption is right-aligned against
+            // it, and the hint takes everything left of that.
+            //
+            // This row had two overlaps. A "W" label was placed at W - 50, which is
+            // inside the spinner that spans W - PAD - 54 to W - PAD, so the unit was
+            // drawn on top of the number. And the hint was W - PAD - 174 wide, ending
+            // past the "Sustained" caption at W - 196. Both are gone: the unit is part
+            // of the caption, and every edge below is derived, not guessed.
+            const int NUMW = 54;
+            const int NUMX = W - PAD - NUMW;
+            const int PCAPW = 84;
+            const int PCAPX = NUMX - GUT - PCAPW;
+
+            MakeMiniRight("Sustained W", new Point(PCAPX, HDR + 42), PCAPW, capFont, this.GrpPwr);
             this.NumPwrWatt.Minimum = 25;
             this.NumPwrWatt.Maximum = 54;
             this.NumPwrWatt.Value = 45;
             this.NumPwrWatt.Increment = 1;
-            this.NumPwrWatt.Location = new Point(W - PAD - 54, HDR + 40);
-            this.NumPwrWatt.Size = new Size(54, 24);
+            this.NumPwrWatt.Location = new Point(NUMX, HDR + 40);
+            this.NumPwrWatt.Size = new Size(NUMW, 24);
             this.NumPwrWatt.TextAlign = HorizontalAlignment.Center;
             this.NumPwrWatt.BorderStyle = BorderStyle.FixedSingle;
             this.NumPwrWatt.BackColor = GuiTheme.Panel;
             this.NumPwrWatt.ForeColor = GuiTheme.Text;
             this.NumPwrWatt.Enabled = false;
-            MakeMini("W", new Point(W - 50, HDR + 42), capFont, this.GrpPwr);
 
             // Live description of what the selected preset actually did
             this.LblPwrHint.AutoSize = false;
             this.LblPwrHint.Font = capFont;
             this.LblPwrHint.ForeColor = GuiTheme.Muted;
             this.LblPwrHint.Location = new Point(PAD, HDR + 36);
-            this.LblPwrHint.Size = new Size(W - PAD - 174, 34);
+            this.LblPwrHint.Size = new Size(PCAPX - GUT - PAD, 34);
             this.LblPwrHint.Text = "";
 
             this.Tip.SetToolTip(this.RdoPwrEco,
@@ -440,13 +530,14 @@ namespace OmenMon.AppGui {
 #region Section: Keyboard
             this.ChkKbdBacklight.Location = new Point(PAD, HDR + 2);
             this.ChkKbdBacklight.AutoCheck = false;
-            this.ChkKbdBacklight.Size = new Size(90, 24);
+            this.ChkKbdBacklight.Size = new Size(90, 24);   // "Backlight" needs this much
+            const int KBDX = PAD + 90 + GUT;                // where the zone combo starts
             this.ChkKbdBacklight.Text = "Backlight";
 
             // Which zone the R/G/B sliders apply to (index 0 = All = uniform colour)
             this.CmbKbdZone.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbKbdZone.Location = new Point(120, HDR);
-            this.CmbKbdZone.Size = new Size(W - PAD - 120, 26);
+            this.CmbKbdZone.Location = new Point(KBDX, HDR);
+            this.CmbKbdZone.Size = new Size(W - PAD - KBDX, 26);
             this.CmbKbdZone.Items.AddRange(new object[] {
                 "All zones (uniform)", "Left  (F1–F5)", "Middle  (F6–F12)", "Right  (nav / arrows)", "WASD" });
             this.CmbKbdZone.SelectedIndex = 0;
@@ -457,20 +548,31 @@ namespace OmenMon.AppGui {
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
+            // Three equal columns filling the width, with the swatch on the right edge.
+            // The old fixed positions (labels at 16/138/258, 96 px sliders) left 148 px
+            // of dead space between the blue slider and the swatch, and the three column
+            // starts were 122 and 120 apart — close enough to look like a mistake rather
+            // than a rhythm.
             int ry = HDR + 92;
-            this.LblKbdR.Text = "R"; this.LblKbdR.Font = capFont; this.LblKbdR.ForeColor = cCap;
-            this.LblKbdR.Location = new Point(PAD, ry + 4); this.LblKbdR.Size = new Size(16, 20);
-            this.LblKbdG.Text = "G"; this.LblKbdG.Font = capFont; this.LblKbdG.ForeColor = cCap;
-            this.LblKbdG.Location = new Point(138, ry + 4); this.LblKbdG.Size = new Size(16, 20);
-            this.LblKbdB.Text = "B"; this.LblKbdB.Font = capFont; this.LblKbdB.ForeColor = cCap;
-            this.LblKbdB.Location = new Point(258, ry + 4); this.LblKbdB.Size = new Size(16, 20);
+            const int SWW = 24;                                   // colour swatch
+            const int RGBW = CONT - SWW - GUT;                    // room for the three
+            const int RGBCOL = (RGBW - 2 * GUT) / 3;              // one column
+            const int RGBLBL = 16;                                // "R" / "G" / "B"
+            const int RGBTRK = RGBCOL - RGBLBL - 4;               // the slider itself
 
-            SetupRgbSlider(this.TrkKbdR, new Point(36, ry));
-            SetupRgbSlider(this.TrkKbdG, new Point(156, ry));
-            SetupRgbSlider(this.TrkKbdB, new Point(276, ry));
+            Action<Label, TrackBar, string, int> mkRgb = (lbl, trk, name, col) => {
+                int x = PAD + col * (RGBCOL + GUT);
+                lbl.Text = name; lbl.Font = capFont; lbl.ForeColor = cCap;
+                lbl.Location = new Point(x, ry + 4);
+                lbl.Size = new Size(RGBLBL, 20);
+                SetupRgbSlider(trk, new Point(x + RGBLBL + 4, ry), RGBTRK);
+            };
+            mkRgb(this.LblKbdR, this.TrkKbdR, "R", 0);
+            mkRgb(this.LblKbdG, this.TrkKbdG, "G", 1);
+            mkRgb(this.LblKbdB, this.TrkKbdB, "B", 2);
 
-            this.PnlKbdSwatch.Location = new Point(W - PAD - 24, ry + 3);
-            this.PnlKbdSwatch.Size = new Size(24, 24);
+            this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry + 3);
+            this.PnlKbdSwatch.Size = new Size(SWW, 24);
             this.PnlKbdSwatch.BorderStyle = BorderStyle.FixedSingle;
 
             int py = ry + 40;
@@ -485,7 +587,7 @@ namespace OmenMon.AppGui {
             this.BtnKbdColorPresetRen.Text = "Rename";
             this.BtnKbdColorPresetDel.Text = "Delete";
 
-            int bx = 156;
+            int bx = PAD + 132 + GUT;
             foreach(Button b in new Button[] {
                 this.BtnKbdColorPresetSet, this.BtnKbdColorPresetRen, this.BtnKbdColorPresetDel }) {
                 int bw = 56;
@@ -494,7 +596,7 @@ namespace OmenMon.AppGui {
                 } catch { }
                 b.Location = new Point(bx, py - 1);
                 b.Size = new Size(bw, 27);
-                bx += bw + 6;
+                bx += bw + GUT;
             }
 
             // Hex value on its own line under the preset row
@@ -521,7 +623,10 @@ namespace OmenMon.AppGui {
             this.GrpKbd.Controls.Add(this.TxtKbdColorVal);
             this.GrpKbd.Size = new Size(W, H_KBD);
             this.GrpKbd.TabStop = false;
-            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD).Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "\u0026");
+            // Drawn by PaintGroupBox with Graphics.DrawString, which does not treat "&"
+            // as a mnemonic - so the old strip-the-ampersand dance deleted the "&" from
+            // "Keyboard Backlight & Color" and left two spaces in the caption.
+            this.GrpKbd.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_KBD);
 #endregion
 
 #region Section: System
@@ -579,7 +684,7 @@ namespace OmenMon.AppGui {
             this.GrpSys.Controls.Add(this.RtfSysInfo);
             this.GrpSys.Size = new Size(W, H_SYS);
             this.GrpSys.TabStop = false;
-            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS).Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "\u0026");
+            this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS);   // see GrpKbd above
 #endregion
 
             // Stack the sections with a consistent gap
@@ -695,6 +800,7 @@ namespace OmenMon.AppGui {
             this.BtnProfAdd.Click += EventProfileAdd;
             this.BtnProfDel.Click += EventProfileDel;
             this.BtnCurveEdit.Click += EventCurveSave;
+            this.BtnProfRen.Click += EventProfileRename;
             this.CmbFanMode.SelectionChangeCommitted += EventFanModeChanged;
             this.RdoFanAuto.CheckedChanged  += EventFanRdoChanged;
             this.RdoFanConst.CheckedChanged += EventFanRdoChanged;
@@ -711,6 +817,10 @@ namespace OmenMon.AppGui {
             this.RdoPwrPerf.CheckedChanged   += EventPwrPreset;
             this.RdoPwrCustom.CheckedChanged += EventPwrPreset;
             this.NumPwrWatt.ValueChanged     += EventPwrWattChanged;
+            this.Curve.HoverChanged      += EventCurveHover;
+            this.Curve.SelectionChanged  += EventCurveSelection;
+            this.NumCurveTemp.ValueChanged += EventCurvePointEdit;
+            this.NumCurveRpm.ValueChanged  += EventCurvePointEdit;
             this.ChkAutoStart.Click += EventActionAutoStart;
             this.ChkKbdBacklight.Click += EventActionBacklight;
             this.CmbKbdColorPreset.SelectionChangeCommitted += EventColorPreset;
@@ -725,6 +835,51 @@ namespace OmenMon.AppGui {
         // Width comes from the text, not from a constant. The fixed 44 px this replaces
         // clipped "Sustained" to "Susta" and "Profile" to "Profil", and would have gone
         // on clipping anything longer — including after the type scale changed.
+
+        // Guard against the feedback loop: writing the selected point into the entry
+        // fields raises ValueChanged, which would write straight back into the curve.
+        private bool curveSyncing;
+
+        // Pointer moved over the curve: say what is under it. Falls back to the help
+        // text when the pointer leaves, so the row is never blank.
+        private void EventCurveHover(object sender, EventArgs e) {
+            var h = this.Curve.Hover;
+            if(!h.Valid) {
+                this.LblCurveInfo.Text = this.Curve.ReadOnly ? LockedHelpText : CurveHelpText;
+                return;
+            }
+            this.LblCurveInfo.Text = (h.Gpu ? "GPU" : "CPU") + "  "
+                + h.TempC + " °C  ·  " + (h.Level * 100) + " rpm"
+                + (this.Curve.ReadOnly ? "   (read-only)" : h.OnPoint ? "" : "   (click to add a point here)");
+        }
+
+        // A point was selected or dragged: mirror it into the entry fields
+        private void EventCurveSelection(object sender, EventArgs e) {
+            var s = this.Curve.Selection;
+            this.curveSyncing = true;
+            try {
+                this.NumCurveTemp.Enabled = s.Valid;
+                this.NumCurveRpm.Enabled = s.Valid;
+                if(s.Valid) {
+                    this.NumCurveTemp.Value = Clamp(s.TempC, this.NumCurveTemp.Minimum, this.NumCurveTemp.Maximum);
+                    this.NumCurveRpm.Value = Clamp(s.Level * 100, this.NumCurveRpm.Minimum, this.NumCurveRpm.Maximum);
+                }
+            } catch { } finally { this.curveSyncing = false; }
+        }
+
+        // A number was typed: move the selected point there
+        private void EventCurvePointEdit(object sender, EventArgs e) {
+            if(this.curveSyncing) return;
+            try {
+                this.Curve.TrySetSelected((int) this.NumCurveTemp.Value,
+                    (int) Math.Round(this.NumCurveRpm.Value / 100m));
+            } catch { }
+        }
+
+        private static decimal Clamp(decimal v, decimal lo, decimal hi) {
+            return v < lo ? lo : v > hi ? hi : v;
+        }
+
         private void MakeMini(string text, Point at, Font f, Control parent) {
             int w = 44;
             try {
@@ -738,7 +893,20 @@ namespace OmenMon.AppGui {
             parent.Controls.Add(l);
         }
 
-        private void SetupRgbSlider(TrackBar t, Point at) {
+        // Same as MakeMini, but the text is right-aligned inside a fixed box, so a
+        // caption can be anchored against the control it labels instead of drifting
+        // with its own string length.
+        private void MakeMiniRight(string text, Point at, int width, Font f, Control parent) {
+            var l = new Label {
+                AutoSize = false, Text = text, Font = f, ForeColor = GuiTheme.Muted,
+                Location = at, Size = new Size(width, 22),
+                TextAlign = ContentAlignment.MiddleRight,
+                BackColor = Color.Transparent
+            };
+            parent.Controls.Add(l);
+        }
+
+        private void SetupRgbSlider(TrackBar t, Point at, int width) {
             t.AutoSize = false;
             t.Location = at;
             t.Minimum = 0;
@@ -746,7 +914,7 @@ namespace OmenMon.AppGui {
             t.TickFrequency = 64;
             t.TickStyle = TickStyle.None;
             t.Orientation = Orientation.Horizontal;
-            t.Size = new Size(96, 30);
+            t.Size = new Size(width, 30);
             t.TabStop = false;
         }
 #endregion

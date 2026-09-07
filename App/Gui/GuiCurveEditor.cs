@@ -23,7 +23,12 @@ namespace OmenMon.AppGui {
 
     internal sealed class GuiCurveEditor : Control {
 
-        private const int TMin = 20, TMax = 95;      // °C  (X)
+        // The axis starts where the machine actually lives. Below 30 °C nothing on this
+        // laptop asks for cooling, and a plot that began at 20 spent its first sixth on
+        // a temperature the CPU only sees when the machine is off. FanProgram clamps any
+        // temperature under the lowest row to that row, so the lowest row still covers
+        // everything below it — no cooling behaviour changes.
+        private const int TMin = 30, TMax = 95;      // °C  (X)
         private int LMin = 0, LMax = 60;             // level (Y), ×100 = rpm
 
         private static readonly Color ColCpu = Color.FromArgb(0xFF, 0x6B, 0x2E);
@@ -33,6 +38,14 @@ namespace OmenMon.AppGui {
         private List<int[]> pts = new List<int[]>();
         private int dragIdx = -1;
         private bool dragGpu;
+
+        // Read-only curves. Default, Silent and Performance are the three references the
+        // rest of this work is measured against — they came from upstream's own tables
+        // and from the acoustic and thermal tests documented in the README, and a curve
+        // edited by accident is not something you notice until the machine is too hot or
+        // too loud. They can be selected, applied and copied; they cannot be changed.
+        // "+" makes an editable copy under a new name, which is where experiments belong.
+        public bool ReadOnly { get; set; }
 
         public string ProgramName { get; private set; }
         public event EventHandler CurveChanged;
@@ -58,6 +71,32 @@ namespace OmenMon.AppGui {
                 pts.Clear();
                 pts.Add(new int[] { TMin, LMin, LMin });
                 pts.Add(new int[] { TMax, LMax, LMax });
+            }
+            // Rows below the axis start (typically the 0 °C floor row that older configs
+            // carry) are folded onto TMin rather than drawn off-canvas. Safe because
+            // FanProgram.GetTemperatureLevel() clamps anything under the lowest threshold
+            // to the lowest row, so a 30 °C row governs 0-30 °C exactly as a 0 °C row did.
+            if(pts.Count > 0) {
+                var below = pts.Where(p => p[0] < TMin).OrderBy(p => p[0]).ToList();
+                if(below.Count > 0) {
+                    int[] keep = below[below.Count - 1];
+                    pts.RemoveAll(p => p[0] < TMin);
+                    if(!pts.Any(p => p[0] == TMin))
+                        pts.Add(new int[] { TMin, keep[1], keep[2] });
+                }
+            }
+            // Guarantee an anchor at each end. A curve stored as 36..87 °C drew a line
+            // that stopped in mid-air at both sides, while FanProgram was in fact applying
+            // the 36 °C row from 30 °C down and the 87 °C row all the way to 95. The
+            // anchors make the picture agree with that, at the same levels, so adding
+            // them changes nothing about how the fans behave.
+            if(pts.Count > 0) {
+                pts.Sort((x, y) => x[0].CompareTo(y[0]));
+                if(pts[0][0] != TMin)
+                    pts.Insert(0, new int[] { TMin, pts[0][1], pts[0][2] });
+                int[] last = pts[pts.Count - 1];
+                if(last[0] != TMax)
+                    pts.Add(new int[] { TMax, last[1], last[2] });
             }
             Sort();
             Simplify();
@@ -126,6 +165,8 @@ namespace OmenMon.AppGui {
         // to reason about, and the steps the hardware actually executes become small
         // enough to disappear into it.
         public bool SaveProgram() {
+            if(ReadOnly)
+                return false;
             if(ProgramName == null || !Config.FanProgram.ContainsKey(ProgramName)) return false;
             Sort();
 
@@ -165,7 +206,8 @@ namespace OmenMon.AppGui {
         private static int Clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
         private Rectangle Plot {
-            get { return new Rectangle(46, 26, Math.Max(10, Width - 60), Math.Max(10, Height - 48)); }
+            get { return new Rectangle(GuiChart.AxisLeft, 26,
+                Math.Max(10, Width - GuiChart.AxisLeft - 14), Math.Max(10, Height - 48)); }
         }
 
         private Point ToScreen(int tempC, int level) {
@@ -245,6 +287,70 @@ namespace OmenMon.AppGui {
             using(var br = new SolidBrush(c))
                 foreach(PointF s in scr)
                     g.FillEllipse(br, s.X - 4, s.Y - 4, 8, 8);
+
+            // Ring the selected handle, so the numbers in the entry fields visibly belong
+            // to one point on the graph rather than to whichever was touched last.
+            bool isGpuLine = yi == 2;
+            if(selIdx >= 0 && selIdx < scr.Length && selGpu == isGpuLine)
+                using(var pen = new Pen(GuiTheme.Text, 2f))
+                    g.DrawEllipse(pen, scr[selIdx].X - 7, scr[selIdx].Y - 7, 14, 14);
+        }
+
+        // What the pointer is over, or what is selected, for the readout above the graph.
+        // Curve editing by dragging is quick but imprecise — you cannot land on exactly
+        // 65 °C / 3200 rpm with a mouse — so the same point is also editable as numbers.
+        internal sealed class PointInfo : EventArgs {
+            public bool Valid;      // false = pointer is off the plot, or nothing selected
+            public bool OnPoint;    // over an existing handle rather than open space
+            public bool Gpu;        // which of the two curves
+            public int TempC;
+            public int Level;       // ×100 = rpm
+        }
+
+        public event EventHandler HoverChanged;
+        public event EventHandler SelectionChanged;
+
+        private int selIdx = -1;
+        private bool selGpu;
+        private PointInfo hover = new PointInfo();
+
+        internal PointInfo Hover { get { return this.hover; } }
+
+        internal PointInfo Selection {
+            get {
+                if(this.selIdx < 0 || this.selIdx >= this.pts.Count)
+                    return new PointInfo();
+                int[] p = this.pts[this.selIdx];
+                return new PointInfo {
+                    Valid = true, OnPoint = true, Gpu = this.selGpu,
+                    TempC = p[0], Level = p[this.selGpu ? 2 : 1]
+                };
+            }
+        }
+
+        // Move the selected point to an exact temperature and level, applying the same
+        // constraints dragging does: a point may not pass its neighbours, and the level
+        // stays inside the axis. Returns false and changes nothing if there is no
+        // selection, so a stray keystroke in the entry field cannot corrupt the curve.
+        internal bool TrySetSelected(int tempC, int level) {
+
+            if(ReadOnly)
+                return false;
+
+            if(this.selIdx < 0 || this.selIdx >= this.pts.Count)
+                return false;
+
+            int lo, hi;
+            DragRange(this.selIdx, out lo, out hi);
+
+            int[] pt = this.pts[this.selIdx];
+            pt[0] = Clamp(tempC, lo, hi);
+            pt[this.selGpu ? 2 : 1] = Clamp(level, Config.FanLevelMin, Config.FanLevelMax);
+
+            Changed();
+            if(this.SelectionChanged != null) this.SelectionChanged(this, EventArgs.Empty);
+            return true;
+
         }
 
         private int HitTest(Point m, out bool gpu) {
@@ -274,14 +380,26 @@ namespace OmenMon.AppGui {
 
         protected override void OnMouseDown(MouseEventArgs e) {
             base.OnMouseDown(e);
+            if(ReadOnly) return;
             bool gpu;
             int hit = HitTest(e.Location, out gpu);
             if(e.Button == MouseButtons.Right) {
-                if(hit >= 0 && pts.Count > 2) { pts.RemoveAt(hit); Sort(); Changed(); }
+                // The first and last handles anchor the curve to the axis ends and are
+                // not removable: without them the plotted line stops short of the
+                // edge and the curve no longer says what happens there.
+                if(hit >= 0 && pts.Count > 2 && !IsEndpoint(hit)) {
+                    pts.RemoveAt(hit);
+                    if(selIdx == hit) selIdx = -1; else if(selIdx > hit) selIdx--;
+                    Sort(); Changed(); RaiseSelection();
+                }
                 return;
             }
             if(e.Button != MouseButtons.Left) return;
-            if(hit >= 0) { dragIdx = hit; dragGpu = gpu; return; }
+            if(hit >= 0) {
+                dragIdx = hit; dragGpu = gpu;
+                Select(hit, gpu);
+                return;
+            }
             int t = ToTemp(e.X);
             if(pts.Any(q => q[0] == t)) return;
             pts.Add(new int[] { t, InterpAt(t, 1), InterpAt(t, 2) });
@@ -289,18 +407,78 @@ namespace OmenMon.AppGui {
             dragIdx = pts.FindIndex(q => q[0] == t);
             dragGpu = Math.Abs(ToScreen(t, InterpAt(t, 2)).Y - e.Y)
                     < Math.Abs(ToScreen(t, InterpAt(t, 1)).Y - e.Y);
+            Select(dragIdx, dragGpu);
             Changed();
+        }
+        // The two handles that pin the curve to the axis ends. They may be dragged up and
+        // down freely, but not sideways and not away: a curve whose leftmost point sat at
+        // 50 °C said nothing at all about 30-50 °C, and FanProgram would silently apply the
+        // 50 °C row down there instead. Anchoring both ends keeps the picture and the
+        // behaviour the same thing.
+        private bool IsEndpoint(int idx) {
+            return idx <= 0 || idx >= pts.Count - 1;
+        }
+
+        // How far a handle may travel horizontally. Endpoints: nowhere.
+        private void DragRange(int idx, out int lo, out int hi) {
+            if(idx <= 0)                 { lo = hi = TMin; return; }
+            if(idx >= pts.Count - 1)     { lo = hi = TMax; return; }
+            lo = pts[idx - 1][0] + 1;
+            hi = pts[idx + 1][0] - 1;
+        }
+
+
+        private void Select(int idx, bool gpu) {
+            this.selIdx = idx; this.selGpu = gpu;
+            Invalidate();
+            RaiseSelection();
+        }
+
+        private void RaiseSelection() {
+            if(this.SelectionChanged != null) this.SelectionChanged(this, EventArgs.Empty);
         }
 
         protected override void OnMouseMove(MouseEventArgs e) {
             base.OnMouseMove(e);
+
+            // Report what the pointer is over, whether or not a drag is in progress —
+            // during a drag this is the live value of the point being moved, which is
+            // exactly what you want to see while placing it.
+            bool hgpu;
+            int hhit = HitTest(e.Location, out hgpu);
+            PointInfo hi = new PointInfo { Valid = true, OnPoint = hhit >= 0 };
+            if(dragIdx >= 0 && dragIdx < pts.Count) {
+                hi.Gpu = dragGpu; hi.TempC = pts[dragIdx][0];
+                hi.Level = pts[dragIdx][dragGpu ? 2 : 1];
+            } else if(hhit >= 0) {
+                hi.Gpu = hgpu; hi.TempC = pts[hhit][0];
+                hi.Level = pts[hhit][hgpu ? 2 : 1];
+            } else {
+                hi.TempC = ToTemp(e.X);
+                hi.Level = ToLevel(e.Y);
+                // Off the plot area entirely: say nothing rather than a clamped number
+                if(hi.TempC < TMin || hi.TempC > TMax) hi.Valid = false;
+                hi.Gpu = Math.Abs(ToScreen(hi.TempC, InterpAt(hi.TempC, 2)).Y - e.Y)
+                       < Math.Abs(ToScreen(hi.TempC, InterpAt(hi.TempC, 1)).Y - e.Y);
+            }
+            this.hover = hi;
+            if(this.HoverChanged != null) this.HoverChanged(this, EventArgs.Empty);
+
             if(dragIdx < 0 || dragIdx >= pts.Count) return;
             int[] pt = pts[dragIdx];
             pt[dragGpu ? 2 : 1] = ToLevel(e.Y);
-            int lo = dragIdx > 0 ? pts[dragIdx - 1][0] + 1 : TMin;
-            int hi = dragIdx < pts.Count - 1 ? pts[dragIdx + 1][0] - 1 : TMax;
-            pt[0] = Clamp(ToTemp(e.X), lo, hi);
+            int lo, hi2;
+            DragRange(dragIdx, out lo, out hi2);
+            pt[0] = Clamp(ToTemp(e.X), lo, hi2);
+            selIdx = dragIdx; selGpu = dragGpu;
             Changed();
+            RaiseSelection();
+        }
+
+        protected override void OnMouseLeave(EventArgs e) {
+            base.OnMouseLeave(e);
+            this.hover = new PointInfo();
+            if(this.HoverChanged != null) this.HoverChanged(this, EventArgs.Empty);
         }
 
         protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); dragIdx = -1; }

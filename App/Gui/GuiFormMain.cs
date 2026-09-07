@@ -245,7 +245,17 @@ namespace OmenMon.AppGui {
             }
 
             this.Curve.LoadProgram(name);
-            this.BtnProfDel.Enabled = !IsStandardProfile(name);
+            // The three reference curves are read-only: selectable, appliable, copyable
+            // with "+", but not editable. See GuiCurveEditor.ReadOnly.
+            bool locked = IsStandardProfile(name);
+            this.BtnProfDel.Enabled = !locked;
+            this.Curve.ReadOnly = locked;
+            this.BtnCurveEdit.Enabled = !locked;
+            if(locked) {
+                this.NumCurveTemp.Enabled = false;
+                this.NumCurveRpm.Enabled = false;
+            }
+            this.LblCurveInfo.Text = locked ? LockedHelpText : CurveHelpText;
 
             // Only auto-apply for a real user pick — the constructor calls this too,
             // and AutoConfig has already started the default profile by then.
@@ -278,6 +288,67 @@ namespace OmenMon.AppGui {
                     lock(Context.Op.HardwareLock) Context.Op.Program.Run(name);
             } catch { }
             UpdateSysMsg("Curve saved to profile \"" + name + "\".");
+        }
+
+
+        // Rename a profile. Only user profiles: the three reference curves keep their
+        // names because everything else — the saved "last used" preference, this file's
+        // own StandardProfiles list, and the README — refers to them by name.
+        private void EventProfileRename(object sender, EventArgs e) {
+
+            string name = this.CmbFanProg.SelectedValue as string;
+            if(string.IsNullOrEmpty(name)) return;
+
+            if(IsStandardProfile(name)) {
+                MessageBox.Show(this, "\"" + name + "\" is a reference profile and cannot be renamed."
+                    + "\n\nPress + to make an editable copy under a name of your own.",
+                    "Rename profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string fresh = Gui.ShowPromptInputText("New name for \"" + name + "\":", name, this);
+            if(string.IsNullOrEmpty(fresh) || fresh == name) return;
+
+            if(Config.FanProgram.ContainsKey(fresh)) {
+                MessageBox.Show(this, "A profile with that name already exists.", "Rename profile",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try {
+
+                FanProgramData old = Config.FanProgram[name];
+                var levels = new System.Collections.Generic.SortedDictionary<byte, byte[]>();
+                foreach(var kv in old.Level)
+                    levels[kv.Key] = new byte[] { kv.Value[0], kv.Value[1] };
+
+                Config.FanProgram[fresh] = new FanProgramData(fresh, old.FanMode, old.GpuPower, levels);
+                Config.FanProgram.Remove(name);
+                Config.Save();
+
+                // Follow the rename: if this profile is the one running, restart it under
+                // the new name, and remember the new name for the next launch.
+                bool wasActive = false;
+                try { wasActive = Context.Op.Program.GetName() == name; } catch { }
+
+                Context.Menu.Create();
+                SetupFanCtl();
+                try { this.CmbFanProg.SelectedValue = fresh; } catch { }
+                EventProfilePicked(sender, e);
+
+                if(wasActive) {
+                    try { lock(Context.Op.HardwareLock) Context.Op.Program.Run(fresh); } catch { }
+                    UserPrefs.Set(UserPrefs.KeyFanProfile, fresh);
+                }
+
+                UpdateSysMsg("Profile renamed to \"" + fresh + "\".");
+
+            } catch(Exception ex) {
+                Config.ErrorLog("GuiFormMain.ProfileRename", ex, "renaming \"" + name + "\" to \"" + fresh + "\"");
+                MessageBox.Show(this, "Could not rename the profile:\n\n" + ex.Message, "Rename profile",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+
         }
 
         // New profile: copies the current curve under a new name
@@ -329,6 +400,10 @@ namespace OmenMon.AppGui {
 
         // Guard so reflecting the current state doesn't re-apply it
         private bool pwrSyncing;
+
+        // Whether a non-zero fan speed has ever been read, so "no reading yet" at
+        // startup can be told apart from "the firmware has the fans"
+        private bool fanSpeedSeen;
 
         // One power preset = Windows power mode + CPU wattage limits, applied together
         private void EventPwrPreset(object sender, EventArgs e) {
@@ -526,7 +601,46 @@ namespace OmenMon.AppGui {
         }
 
         // Handles the fan settings button being clicked
+        // Applying a profile touches the EC several times from the UI thread, and on this
+        // machine three HP processes (HPSystemEventUtilityHost, OmenCap,
+        // HPSystemEventUtilityBackground) compete for Global\Access_EC. When one of them
+        // holds it through the whole 2500 ms retry budget the apply used to fail with a
+        // modal "Failed to acquire embedded controller exclusive lock" — in the middle of
+        // an ordinary profile switch.
+        //
+        // That dialog is the wrong response twice over. It stops the user for something
+        // they cannot act on, and it is not even true that the change was lost: the fan
+        // program re-asserts its levels on every tick, so a single missed apply corrects
+        // itself within two seconds.
+        //
+        // So the apply runs quiet and retries once. Only if both attempts are locked out
+        // does the user hear about it, and then in the status line with the name of the
+        // process to close — not in a box they have to dismiss.
         private void EventActionFanSet(object sender, EventArgs e) {
+
+            int before = Hw.EcLockTimeoutCount;
+            bool wasQuiet = Hw.EcLockQuiet;
+            Hw.EcLockQuiet = true;
+            try {
+
+                ApplyFanSettings(sender, e);
+
+                if(Hw.EcLockTimeoutCount != before) {
+                    System.Threading.Thread.Sleep(120);
+                    before = Hw.EcLockTimeoutCount;
+                    ApplyFanSettings(sender, e);
+                    if(Hw.EcLockTimeoutCount != before)
+                        UpdateSysMsg("Embedded controller busy — retrying on the next tick."
+                            + " Close HP's own software if this persists.");
+                }
+
+            } finally {
+                Hw.EcLockQuiet = wasQuiet;
+            }
+
+        }
+
+        private void ApplyFanSettings(object sender, EventArgs e) {
 
             // Query fan state
             bool isFanMax = Context.Op.Platform.Fans.GetMax();
@@ -1085,18 +1199,26 @@ namespace OmenMon.AppGui {
 
             // Update the fan speed [rpm].
             //
-            // A zero is shown as "auto", not as a number. On this board the rpm figure is
+            // A zero is not printed as a number. On this board the rpm figure is
             // BiosLevelMirror x100 — the level OmenMon last commanded, read back — so it
-            // reads 0 whenever nothing is being commanded: at startup, and whenever the
-            // BIOS countdown lapses and the firmware takes fan control back. The fans are
-            // spinning perfectly well in that state; we simply do not know how fast.
-            // Printing "0 rpm" for "no reading" claims the fans have stopped, which is
-            // both false and alarming.
+            // reads 0 whenever nothing is being commanded: for the first few seconds
+            // after startup, and whenever the BIOS countdown lapses and the firmware
+            // takes fan control back. The fans are spinning perfectly well in that state;
+            // we simply do not know how fast. Printing "0 rpm" for "no reading" claims
+            // the fans have stopped, which is both false and alarming.
+            //
+            // But those two zeroes mean different things, and showing "auto" for both
+            // reads as a broken sensor in the ten seconds after launch — before the fan
+            // program has commanded anything there is simply nothing to report yet.
+            // So: "—" until the first real reading, "auto" for a zero after one.
             try {
+                if(s.FanSpeed[0] > 0 || s.FanSpeed[1] > 0)
+                    this.fanSpeedSeen = true;
+                string none = this.fanSpeedSeen ? "auto" : "—";
                 this.LblFan0Val.Text = s.FanSpeed[0] > 0
-                    ? s.FanSpeed[0].ToString(Config.FormatFanSpeed) : "auto";
+                    ? s.FanSpeed[0].ToString(Config.FormatFanSpeed) : none;
                 this.LblFan1Val.Text = s.FanSpeed[1] > 0
-                    ? s.FanSpeed[1].ToString(Config.FormatFanSpeed) : "auto";
+                    ? s.FanSpeed[1].ToString(Config.FormatFanSpeed) : none;
             } catch { }
 
             // Update the fan level [krpm]

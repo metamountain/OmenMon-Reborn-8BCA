@@ -37,8 +37,13 @@ namespace OmenMon.AppGui {
         //
         // Hero is in pixels because it uses the bundled IoMon face, a bitmap design that
         // only looks right at exact pixel sizes.
-        public const float FontHero  = 28F;   // px  - the CPU/GPU sensor readouts
-        public const float FontBody  = 9F;    // pt  - labels, buttons, section text
+        // Four sizes, and a section heading that is clearly a heading.
+        // The sensor readout came down from 28 px: at that size the two rows dominated
+        // the window and the numbers read as the point of the program rather than as one
+        // of its six sections.
+        public const float FontHero    = 24F;   // px  - the CPU/GPU sensor readouts
+        public const float FontHeading = 10.5F; // pt  - section captions
+        public const float FontBody    = 9F;    // pt  - labels, buttons, section text
         public const float FontSmall = 7.5F;  // pt  - graph axis ticks and legends
         public const float FontMono  = 8.25F; // pt  - the system information strip
 
@@ -77,6 +82,14 @@ namespace OmenMon.AppGui {
                 case GroupBox g:
                     g.ForeColor = Muted;
                     g.BackColor = Bg;
+                    // One size up from body text, so a section caption is visibly a
+                    // heading rather than another label that happens to sit at the top.
+                    // Set here rather than per-section so all six cannot drift apart.
+                    try {
+                        if(g.Font == null || Math.Abs(g.Font.SizeInPoints - FontHeading) > 0.01f)
+                            g.Font = new Font(g.Font != null ? g.Font.FontFamily.Name : "Segoe UI",
+                                FontHeading, FontStyle.Regular, GraphicsUnit.Point);
+                    } catch { }
                     // Replace the etched 3-D frame with a single hairline under the caption.
                     g.Paint -= PaintGroupBox;
                     g.Paint += PaintGroupBox;
