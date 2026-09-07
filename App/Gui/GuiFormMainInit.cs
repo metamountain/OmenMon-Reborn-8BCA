@@ -197,9 +197,11 @@ namespace OmenMon.AppGui {
             ((System.ComponentModel.ISupportInitialize) this.TrkKbdB).BeginInit();
 
             const int W = 560;                 // section content width
-            const int GX = 16;                 // form left margin
-            const int HDR = 28;                // gap from section top to first control
-                                               // (clears the 10.5 pt caption and its rule)
+            // Sections span the full client width, so the only horizontal margin in the
+            // window is PAD. It used to be GX 16 *plus* PAD, which put text 26 px from
+            // the edge and meant "the margin" was two numbers that had to be added up.
+            const int GX = 0;                  // sections are full-width
+            const int HDR = GuiTheme.CaptionBand; // first content row, below the caption rule
             const int GAP = 8;                 // gap between stacked sections
             const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
 
@@ -254,7 +256,10 @@ namespace OmenMon.AppGui {
             int hCurve = graphBudget - hChart;
 
 #region Section: Graph
-            this.Chart.Location = new Point(PAD, HDR - 8);
+            // Pulled up into the caption band to give the plot height, but never above the
+            // rule: derived from CaptionRuleY rather than the old magic "HDR - 8", which
+            // happened to sit one pixel over the rule and hid it.
+            this.Chart.Location = new Point(PAD, GuiTheme.CaptionRuleY + 2);
             this.Chart.Size = new Size(W - 2 * PAD, hChart);
             this.Chart.SampleSeconds = Math.Max(1, Config.UpdateMonitorInterval);
             this.GrpChart.Controls.Add(this.Chart);
@@ -689,7 +694,7 @@ namespace OmenMon.AppGui {
 #endregion
 
             // Stack the sections with a consistent gap
-            this.GrpChart.Location = new Point(GX, GAP);
+            this.GrpChart.Location = new Point(GX, GuiTheme.Pad);
             this.GrpTmp.Location = new Point(GX, this.GrpChart.Bottom + GAP);
             this.GrpFan.Location = new Point(GX, this.GrpTmp.Bottom + GAP);
             this.GrpPwr.Location = new Point(GX, this.GrpFan.Bottom + GAP);
@@ -707,7 +712,8 @@ namespace OmenMon.AppGui {
             try { this.Font = GuiTheme.Ui(GuiTheme.FontBody); } catch { }
             this.AutoScaleMode = AutoScaleMode.None;
             this.AutoSize = false;
-            this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GAP);
+            // Same 10 px below the last section as above the first and beside them all
+            this.ClientSize = new Size(W + 2 * GX, this.GrpSys.Bottom + GuiTheme.Pad);
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.HelpButton = true;
             this.Icon = OmenMon.Resources.Icon;

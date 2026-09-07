@@ -61,6 +61,23 @@ namespace OmenMon.AppGui {
         // the window edge were previously set independently and drifted apart.
         public const int BorderWidth = 1;
 
+        // Where a section's hairline sits, and the only thing that decides it.
+        //
+        // It used to be g.Font.Height + 2 — a font metric — while the History chart was
+        // placed at the magic offset HDR - 8. Two numbers derived from different things
+        // and required to stay in order: with Segoe UI 10.5 pt the rule landed at 21 and
+        // the chart's top edge at 20, so History's rule was drawn *underneath its own
+        // chart* and vanished, while every other section, whose content starts lower,
+        // kept its own. Any font or DPI change moves one and not the other.
+        //
+        // Fixed, so the relationship is structural rather than arithmetic: the layout's
+        // HDR and the chart's pull-up are both derived from this below, and no caption
+        // font can push the rule into the content again.
+        public const int CaptionRuleY = 18;
+
+        // First content row of a section, clearing the caption and its rule
+        public const int CaptionBand = CaptionRuleY + 10;
+
         // The one way to ask for type. Every call site goes through here, so the three
         // sizes above are the only three the window can render.
         public static Font Ui(float size, bool bold = false) {
@@ -221,9 +238,8 @@ namespace OmenMon.AppGui {
             e.Graphics.Clear(g.BackColor);
             using(var br = new SolidBrush(Muted))
                 e.Graphics.DrawString(g.Text, g.Font, br, Pad, 0);
-            int y = g.Font.Height + 2;
             using(var pen = new Pen(Border))
-                e.Graphics.DrawLine(pen, Pad, y, g.Width - Pad, y);
+                e.Graphics.DrawLine(pen, Pad, CaptionRuleY, g.Width - Pad, CaptionRuleY);
         }
 
         // Dark drop-down list items.
