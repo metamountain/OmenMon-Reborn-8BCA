@@ -23,7 +23,6 @@ namespace OmenMon.AppGui {
 
 #region Variables
         // Color picker dialog stored globally to preserve user colors
-        private ColorDialogEx ColorPicker;
 
         // Color preset data source
         private List<Object> ColorPresets;
@@ -85,12 +84,6 @@ namespace OmenMon.AppGui {
 
                 // Update the keyboard picture
                 this.PicKbd.Image = Kbd.GetImage();
-
-                // Initialize the color picker
-                this.ColorPicker = new ColorDialogEx(UpdateKbdCallback);
-
-                // Pre-populate the custom colors for the color picker
-                this.ColorPicker.CustomColors = Kbd.UpdateColorPicker(Config.GuiColorPickerCustom);
 
             } else
 
@@ -922,45 +915,27 @@ namespace OmenMon.AppGui {
         }
 
         // Handles the event of a color zone being clicked
+        // Clicking a zone on the keyboard picture selects that zone. It does not open
+        // anything.
+        //
+        // It used to open the modal ColorDialog as well, so after the inline picker was
+        // added a click produced both at once — two pickers for one colour, one of them
+        // covering the keyboard the other was for. The inline picker in the panel below
+        // is now the only way to choose a colour; this just says which zone it edits.
         private void EventColorPick(object sender, MouseEventArgs e) {
 
             // No action if backlight off or no support
             if(Kbd == null || !Kbd.GetBacklight())
                 return;
 
-            // Determine the clicked zone from co-ordinates
-            // while also setting the dialog title in one go
             BiosData.KbdZone picked = Kbd.SetZone(e.X, e.Y);
-            this.ColorPicker.Title = Config.Locale.Get(Config.L_GUI_MAIN + "KbdColorPick" + picked.ToString());
 
-            // Reflect the clicked zone in the selector
+            // Reflect the clicked zone in the selector; SyncKbdRgb then loads that zone's
+            // colour into the picker, the R/G/B boxes and the swatch
             try {
                 this.CmbKbdZone.SelectedIndex = ComboIndexForZone(picked);
             } catch { }
             SyncKbdRgb();
-
-            // Set the start color to the current color
-            this.ColorPicker.Color = Color.FromArgb(Kbd.GetColor());
-
-            // Update the current backlight color in the custom colors
-            this.ColorPicker.CustomColors = Kbd.UpdateColorPicker(this.ColorPicker.CustomColors);
-
-            // Put the picker beside the window it belongs to.
-            //
-            // ColorDialogEx has always moved itself on WM_INITDIALOG, but nothing ever
-            // assigned Position, so it took the default Point(0, 0) and the dialog landed
-            // in the top-left corner of the screen — usually a monitor away from the
-            // keyboard you just clicked. It opens to the right of the window now, or to
-            // the left when there is no room, and is clamped to the working area so it
-            // cannot open partly offscreen.
-            this.ColorPicker.Position = PickerPosition();
-
-            // Show the dialog
-            this.ColorPicker.ShowDialog();
-
-            // Note: Color is updated in real time,
-            // so there is nothing more to check here
-
 
         }
 
@@ -1562,38 +1537,6 @@ namespace OmenMon.AppGui {
 
         }
 
-        // Where to open the colour picker: docked to the side of this window, top-aligned
-        // with the keyboard section, and always fully on the screen the window is on.
-        //
-        // The system colour dialog is about this size with FullOpen set. It is a constant
-        // rather than a queried value because the size is only knowable once the dialog
-        // exists, and by then it has already been positioned.
-        private Point PickerPosition() {
-
-            const int DlgW = 460, DlgH = 340, Gap = 8;
-
-            Rectangle screen = Screen.FromControl(this).WorkingArea;
-
-            // Prefer the right of the window, fall back to the left, and if neither side
-            // has room (a narrow or heavily scaled display) sit just inside the right edge
-            int x = this.Right + Gap;
-            if(x + DlgW > screen.Right)
-                x = this.Left - Gap - DlgW;
-            if(x < screen.Left)
-                x = Math.Max(screen.Left, screen.Right - DlgW - Gap);
-
-            // Top-aligned with the keyboard section, then clamped so the whole dialog is
-            // on screen even when that section sits low in a tall window
-            int y = this.Top;
-            try {
-                y = this.PointToScreen(this.GrpKbd.Location).Y;
-            } catch { }
-            y = Math.Max(screen.Top, Math.Min(y, screen.Bottom - DlgH));
-
-            return new Point(x, y);
-
-        }
-
         // Inline colour picker — square + hue strip, R/G/B boxes, swatch, eyedropper.
         // Applies live to the selected zone, exactly as the modal dialog's real-time
         // preview did, but without covering the keyboard picture it is colouring.
@@ -1671,13 +1614,6 @@ namespace OmenMon.AppGui {
         }
 
         // Keeps updating the color as it changes in the Color Picker dialog
-        public void UpdateKbdCallback(int color) {
-            Kbd.SetColor(ColorTranslator.FromWin32(color).ToArgb());
-            this.TxtKbdColorVal.Text = Kbd.GetParam();
-            this.CmbKbdColorPreset.SelectedValue = Kbd.GetPreset();
-            SyncKbdRgb();
-        }
-
         // Update the system information while preserving the status message.
         // Renders from the monitor snapshot — no BIOS calls on the UI thread (issue #98).
         public void UpdateSys() {
