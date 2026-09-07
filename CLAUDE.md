@@ -313,6 +313,34 @@ session cannot wake the GPU however hard it polls, which is why `nvidia-smi` app
 (`ReinitCooldownSec`) so a permanent fault cannot become a re-init loop. Rebuilds are
 logged as `Nvml.Stale`.
 
+**Confirmed in the field, with Task Manager as the independent witness.** 2026-09-07
+11:51:57, one moment, three readers of the same silicon:
+
+| source | reads | |
+|---|---|---|
+| Windows Task Manager | **57 °C** | frozen, no mitigation |
+| OmenMon | **41 °C** | rebuilds the session |
+| `nvidia-smi`, fresh session | **41 °C** | ground truth |
+
+Task Manager was **+16 °C** wrong and stayed there. This is worth keeping for two
+reasons. It shows the fix working against a control that does not have it — the same
+device, the same instant, one reader stale and one correct. And it settles where the
+stale value lives: **in the session, not in the sensor.** Each consumer goes stale on
+its own terms, which is why a fresh session is a complete fix and why "even Task Manager
+is wrong" is evidence *for* the rebuild rather than against it.
+
+**Disproves a caution raised while investigating this**, that an independently-wrong
+Task Manager would mean the reading was poisoned below NVML and no session-level fix
+could help. The opposite is true, and the table above is why. Do not weaken the rebuild
+on that reasoning.
+
+An earlier sighting in the same session — Task Manager dropping 68 → 57 "in a ms" —
+looked like a stale value snapping to truth but was not: it coincided exactly with the
+end of an 81 W load burst, and a small die with the fan already spun up genuinely sheds
+that much in a second or two. The freeze signature is the opposite shape, a value that
+*refuses* to fall while the machine demonstrably cools. Compare against a ground-truth
+read before calling a fast drop a recovery.
+
 **Corrects an earlier note here.** The previous guard rejected a value repeated 120
 times running unless it was at or above 60 C. It could never fire: the stale values
 *are* the last ones seen under load, i.e. 60-69 C, above its own exception. The premise
