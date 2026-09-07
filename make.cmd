@@ -6,19 +6,21 @@ rem     //  https://omenmon.github.io/
 rem
 set DOTNET_CLI_TELEMETRY_OPTOUT=1
 setlocal
-rem Search for MSBuild in standard VS install paths:
+rem Search for MSBuild. vswhere is asked first because it knows where each
+rem edition actually landed; the fixed paths below are only a fallback. Build
+rem Tools installs under Program Files (x86), which the %ProgramFiles%-only
+rem search used to miss - it then fell through to a bare "msbuild" and picked up
+rem whatever was on PATH, here the .NET Framework one, which cannot compile
+rem langversion 11 and fails with CS1617.
 set msbuild=
-if exist "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe" (
-    set msbuild="%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\amd64\MSBuild.exe"
-) else if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" (
-    set msbuild="%ProgramFiles%\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\amd64\MSBuild.exe"
-) else if exist "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\amd64\MSBuild.exe" (
-    set msbuild="%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\amd64\MSBuild.exe"
-) else if exist "%ProgramFiles%\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\amd64\MSBuild.exe" (
-    set msbuild="%ProgramFiles%\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\amd64\MSBuild.exe"
-) else (
-    set msbuild=msbuild
+set pf=%ProgramFiles%
+set pfx=%ProgramFiles(x86)%
+set vswhere="%pfx%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist %vswhere% for /f "usebackq delims=" %%v in (`%vswhere% -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\amd64\MSBuild.exe`) do set msbuild="%%v"
+for %%e in (BuildTools Community Professional Enterprise) do for %%r in ("%pf%" "%pfx%") do (
+    if not defined msbuild if exist "%%~r\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\amd64\MSBuild.exe" set msbuild="%%~r\Microsoft Visual Studio\2022\%%e\MSBuild\Current\Bin\amd64\MSBuild.exe"
 )
+if not defined msbuild set msbuild=msbuild
 rem Version is not pinned here: OmenMon.csproj defaults AssemblyVersion /
 rem AssemblyVersionWord (and CI's build_bump.yml overrides them for tagged
 rem releases), so a local `make build` always picks up the current version
