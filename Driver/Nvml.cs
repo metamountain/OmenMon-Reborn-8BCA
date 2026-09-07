@@ -68,6 +68,13 @@ namespace OmenMon.Driver {
         [DllImport(DllName, ExactSpelling = true)]
         private static extern int nvmlDeviceGetTemperature(IntPtr device, uint sensorType, out uint temp);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Utilization { public uint Gpu; public uint Memory; }
+
+        // The honest one. See TryGetGpuTemperature().
+        [DllImport(DllName, ExactSpelling = true)]
+        private static extern int nvmlDeviceGetUtilizationRates(IntPtr device, out Utilization util);
+
         [DllImport(DllName, ExactSpelling = true, CharSet = CharSet.Ansi, BestFitMapping = false)]
         private static extern int nvmlDeviceGetName(IntPtr device, StringBuilder name, uint length);
 #endregion
@@ -149,39 +156,74 @@ namespace OmenMon.Driver {
             }
         }
 
-        // Consecutive reads that returned the identical value, for the staleness check
-        private static int lastValue = -1;
-        private static int repeatCount;
+        // Set while the session is known stale, for diagnostics and for the fan side
+        private static bool stale;
+        private static int staleCount;
+        private static int reinitCount;
+        private static DateTime lastReinit = DateTime.MinValue;
 
-        // A reading repeated this many times running is treated as stale. At roughly one
-        // sample a second that is about two minutes of a temperature that has not moved
-        // by even a degree — which a live sensor, even an idle one, does not do.
-        private const int StaleRepeatLimit = 120;
+        // Last reading that came from a live session, for deciding how urgently a stale
+        // one needs rebuilding
+        private static int lastLive;
 
-        // Never suspect a reading at or above this. See TryGetGpuTemperature().
-        private const int StaleAlwaysTrustC = 60;
+        // Above this, a stale session has to be rebuilt now: either it froze at a load
+        // value, or a load has started and the session has not noticed. Below it, the
+        // GPU is parked and cold and there is no thermal question to answer.
+        //
+        // Idle here measures 41-44 °C and the frozen values measured 60-69 °C, so 55
+        // separates them with room on both sides.
+        private const int ColdHoldC = 55;
+
+        // Two rebuild rates, because a stale session is the *normal* idle state on a
+        // hybrid-graphics laptop — the dGPU parks whenever nothing needs it, so rebuilding
+        // on every stale read would mean tearing the session down every couple of seconds
+        // forever, and each rebuild briefly wakes the GPU.
+        //
+        // Warm: rebuild almost immediately, this is the case that matters.
+        // Cold: rebuild once a minute anyway, because a stale-and-cold session cannot tell
+        // us whether the GPU is still parked or has woken up and started heating without
+        // the session noticing. Sixty seconds bounds that blind spot; it is the one real
+        // gap left in this scheme and it is deliberate rather than overlooked.
+        private const int ReinitCooldownWarmSec = 10;
+        private const int ReinitCooldownColdSec = 60;
 
         // Current GPU die temperature in whole degrees Celsius.
         // Opens on first use; Open() returns immediately once tried, so the probe it
         // runs cannot recurse back into here.
         //
-        // Guards against a stale value. This laptop is hybrid-graphics: when nothing needs
-        // the discrete GPU, rendering moves to the AMD integrated one and the dGPU powers
-        // down — and NVML then keeps returning the last temperature it recorded before
-        // that, with NVML_SUCCESS, indefinitely. Observed in the field as a frozen 76 °C,
-        // the peak from a load test that had finished minutes earlier, while the real die
-        // sat at 38 °C. Running nvidia-smi woke the GPU and produced one correct reading
-        // before it froze again, which is what made this so confusing to pin down.
+        // Guards against a stale session, which on this laptop is not a corner case but
+        // the normal end of every GPU load. Hybrid graphics parks the discrete GPU as soon
+        // as nothing needs it, and an NVML session that was open across that transition
+        // does not notice: nvmlDeviceGetTemperature keeps returning the last value it
+        // recorded, with NVML_SUCCESS, for as long as the session lives. Measured on this
+        // machine over five cycles — 10 s of load, 60 s of silence — the reading froze in
+        // four of them, 18-27 °C above the truth, and never recovered across 150
+        // consecutive polls. It reported 76 °C in the field while the die sat at 38 °C.
         //
-        // The guard can only ever reject a reading, never invent one, and rejection falls
-        // back to the previous behaviour — so it cannot make anything worse than it was.
+        // An earlier guard here counted repeated identical values and distrusted a run of
+        // them below 60 °C. It could never fire: the stale values are the last ones seen
+        // under load, so they are 60-69 °C — above its own exception. Worse, the premise
+        // was wrong; a frozen reading is not detectable from the temperature at all, since
+        // a genuinely pinned GPU produces exactly the same sequence.
         //
-        // The one case that would be dangerous is a GPU genuinely pinned at a constant
-        // temperature under sustained load, where discarding the reading would drop the
-        // fans exactly when they are needed. Hence StaleAlwaysTrustC: anything at or above
-        // 60 °C is trusted unconditionally, however long it has been steady. A stale value
-        // is only ever the last one seen before the GPU went to sleep, and below 60 °C
-        // discarding it costs nothing.
+        // The detector is nvmlDeviceGetUtilizationRates. It is the one field that reports
+        // the condition honestly instead of serving a cached value: in the stale state it
+        // returns an error (999, NVML_ERROR_UNKNOWN) while temperature returns 0 with a
+        // wrong number, power returns 590 W, and the clock reads 1320 against a true 1980
+        // MHz. Note that it is the return code that matters and not the utilisation value
+        // — a parked GPU and a stale session both report 0 %, so the value distinguishes
+        // nothing.
+        //
+        // Recovery is nvmlShutdown + nvmlInit_v2 in-process. Confirmed twice, immediately
+        // and exactly: 41 against a true 41, 44 against a true 44. No external process is
+        // needed — notably an existing session cannot wake the GPU, which is why polling
+        // harder never helped and why running nvidia-smi appeared to "fix" it.
+        //
+        // Failing all that, this returns false rather than a number, and the fan side
+        // decides what to do about it — see FanProgram. Note that "returns false" is the
+        // ordinary idle state here, not an alarm: a parked GPU has a stale session by
+        // definition, which is why the caller applies a long grace period before treating
+        // it as a lost sensor.
         public static bool TryGetGpuTemperature(out int celsius) {
             celsius = 0;
             if(!tried)
@@ -189,33 +231,96 @@ namespace OmenMon.Driver {
             if(device == IntPtr.Zero)
                 return false;
             try {
+
+                if(!IsSessionLive()) {
+
+                    staleCount++;
+                    stale = true;
+
+                    if(!TryReinit() || !IsSessionLive())
+                        return false;
+
+                    // Only worth a log line when it was the urgent kind. The cold-path
+                    // rebuild happens once a minute for the life of the process and would
+                    // otherwise fill the log with an event that means nothing.
+                    if(lastLive >= ColdHoldC)
+                        OmenMon.Library.Config.ErrorLog("Nvml.Stale", null,
+                            "GPU session went stale at " + lastLive + " °C (utilisation read"
+                            + " failed); re-initialized - stale " + staleCount + "x, re-init "
+                            + reinitCount + "x");
+
+                }
+                stale = false;
+
                 uint temp;
                 if(nvmlDeviceGetTemperature(device, SensorGpu, out temp) != Success)
                     return false;
 
                 int value = (int) temp;
-                if(value == lastValue) {
-                    if(repeatCount < int.MaxValue)
-                        repeatCount++;
-                } else {
-                    lastValue = value;
-                    repeatCount = 0;
-                }
-
-                if(value < StaleAlwaysTrustC && repeatCount >= StaleRepeatLimit)
+                if(value <= 0 || value > 125)
                     return false;
 
+                lastLive = value;
                 celsius = value;
                 return true;
+
             } catch {
                 return false;
             }
         }
 
-        // Whether the last reading looked stale — for diagnostics
-        public static bool IsLikelyStale {
-            get { return lastValue < StaleAlwaysTrustC && repeatCount >= StaleRepeatLimit; }
+        // Whether the session is answering for real, rather than replaying what it last
+        // saw. See TryGetGpuTemperature() for why this particular call is the test.
+        private static bool IsSessionLive() {
+            try {
+                Utilization util;
+                return nvmlDeviceGetUtilizationRates(device, out util) == Success;
+            } catch {
+                return false;
+            }
         }
+
+        // Tear the session down and build a new one. Keeps `tried` set so Open() stays
+        // out of the way — the handle is re-acquired here directly.
+        private static bool TryReinit() {
+
+            int cooldown = lastLive >= ColdHoldC ? ReinitCooldownWarmSec : ReinitCooldownColdSec;
+            if((DateTime.UtcNow - lastReinit).TotalSeconds < cooldown)
+                return false;
+            lastReinit = DateTime.UtcNow;
+            reinitCount++;
+
+            try {
+                device = IntPtr.Zero;
+                if(initialized) {
+                    try { nvmlShutdown(); } catch { }
+                    initialized = false;
+                }
+
+                if(nvmlInit_v2() != Success)
+                    return false;
+                initialized = true;
+
+                IntPtr handle;
+                if(nvmlDeviceGetHandleByIndex_v2(0, out handle) != Success || handle == IntPtr.Zero)
+                    return false;
+                device = handle;
+                return true;
+
+            } catch {
+                return false;
+            }
+        }
+
+        // Whether the last read found the session stale — for diagnostics and for the fan
+        // side, which holds airflow up while this is true
+        public static bool IsLikelyStale {
+            get { return stale; }
+        }
+
+        // How often the session has gone stale and been rebuilt, for the status line
+        public static int GetStaleCount() { return staleCount; }
+        public static int GetReinitCount() { return reinitCount; }
 
         private static string LocateLibrary() {
             try {

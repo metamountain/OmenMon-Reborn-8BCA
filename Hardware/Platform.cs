@@ -220,18 +220,74 @@ namespace OmenMon.Hardware.Platform {
         // reacting within a few seconds of real load.
         //
         // The GPU deliberately gets no equivalent smoothing — see GetGpuTemperature().
+        // Whether the last CPU temperature came from the die, or from a fallback.
+        //
+        // Callers that act on the temperature need to know this. On this board the
+        // fallbacks are not merely less precise, they are wrong: CPUT is firmware string
+        // data that cannot rise, so a fan curve fed by it holds the fans at idle through
+        // a 90 °C load. A consumer must be able to tell "I have a real reading" from
+        // "I have a number".
+        public bool IsCpuTemperatureTrusted { get; private set; }
+
+        // The same question for the GPU, and it has the same answer for the same reason:
+        // GPTM cannot rise, so a curve fed by it is a curve fed by nothing. False when
+        // the die sensor has worked before but is not answering now.
+        public bool IsGpuTemperatureTrusted { get; private set; }
+
+        // Latched once NVML has produced one good reading. Distinguishes "the die sensor
+        // is broken right now" from "this machine never had one", which need opposite
+        // fallbacks — see GetGpuTemperature().
+        private bool nvmlWasSource;
+
+        // Consecutive ticks the die sensor has not answered on
+        private int gpuFailTicks;
+
+        // How long that has to go on before the reading counts as lost. Nvml rebuilds a
+        // cold stale session once every 60 s, so at the 2 s tick a healthy idle machine
+        // never exceeds ~30 consecutive failures. 60 gives that comfortable margin and
+        // still reacts inside two minutes to a sensor that is genuinely gone.
+        private const int GpuUntrustedGraceTicks = 60;
+
+        // Last die reading and when it was taken, so one tick costs one SMN read
+        private byte dieCached;
+        private bool dieCachedOk;
+        private DateTime dieCachedAt = DateTime.MinValue;
+
+        // How long a die reading stays good for. Shorter than the fan program tick, so
+        // the value is never stale in a way that matters, long enough that the several
+        // callers within one tick share a single read.
+        private const int DieCacheMs = 900;
+
         private bool TryGetCpuDieTemperature(out byte celsius) {
+
+            // Serve the tick's other callers from the cache. GetCpuTemperature() and
+            // GetMaxTemperature() each used to read the SMN independently, and the GUI
+            // monitor calls both, so a single pass took the cross-process Access_PCI
+            // mutex four times over. Tripling the program tick rate (15 s -> 2 s)
+            // multiplied that again, right before the reader started failing.
+            if(dieCachedAt != DateTime.MinValue
+                && (DateTime.UtcNow - dieCachedAt).TotalMilliseconds < DieCacheMs) {
+                celsius = dieCached;
+                return dieCachedOk;
+            }
 
             celsius = 0;
             double die;
             if(!OmenMon.Driver.PawnIoAmd.TryGetCpuTemperature(out die)
-                || die <= 0.0 || die >= Config.MaxBelievableTemperature)
+                || die <= 0.0 || die >= Config.MaxBelievableTemperature) {
+                dieCachedAt = DateTime.UtcNow;
+                dieCachedOk = false;
                 return false;
+            }
 
             dieHistory[dieCount++ % dieHistory.Length] = (int) Math.Round(die);
             celsius = (byte) (dieCount >= dieHistory.Length
                 ? Median3(dieHistory[0], dieHistory[1], dieHistory[2])
                 : (int) Math.Round(die));
+
+            dieCached = celsius;
+            dieCachedOk = true;
+            dieCachedAt = DateTime.UtcNow;
             return true;
 
         }
@@ -307,6 +363,20 @@ namespace OmenMon.Hardware.Platform {
 
             byte cpu = 0, bios = 0;
             for(int i = 0; i < this.Temperature.Length; i++) {
+
+                // Honour the per-sensor Use flag from OmenMon.xml. Without this, a sensor
+                // switched off in the configuration still fed the fan curves.
+                //
+                // On this board that was not a cosmetic bug. CPUT is Use="false" because
+                // EC 0x57 holds firmware string data, not a temperature — its values are
+                // ASCII punctuation (0x22 -> "34", 0x26 -> "38", 0x29 -> "41") which look
+                // like a plausible idle CPU and never rise. When the die reading below is
+                // unavailable, this loop silently substituted that garbage: measured, the
+                // CPU sat above 90 °C on Core Temp while OmenMon reported 34 and held the
+                // fans at their 1700 rpm floor. A disabled sensor must stay disabled.
+                if(i < this.TemperatureUse.Length && !this.TemperatureUse[i])
+                    continue;
+
                 string name = this.Temperature[i].GetName();
                 byte val = (byte) this.Temperature[i].GetValue();
                 if(name == "CPUT" && val > 0) cpu = val;
@@ -323,10 +393,18 @@ namespace OmenMon.Hardware.Platform {
             // were measured to be wrong. Every consumer goes through this accessor, so
             // this is the only place the fix is actually true everywhere.
             byte die;
-            if(TryGetCpuDieTemperature(out die))
+            if(TryGetCpuDieTemperature(out die)) {
                 this.LastCpuTemperature = die;
-            else
+                this.IsCpuTemperatureTrusted = true;
+            } else {
+                // Whatever comes out of here is not a temperature anyone should act on.
+                // CPUT is disabled on this board and the BIOS sensor is the same broken
+                // WMI call, so this branch usually yields 0 — and if a sensor list on some
+                // other board does produce a number, the caller still needs to know it did
+                // not come from the die.
                 this.LastCpuTemperature = bios > cpu ? bios : cpu;
+                this.IsCpuTemperatureTrusted = false;
+            }
 
             return this.LastCpuTemperature;
 
@@ -378,8 +456,36 @@ namespace OmenMon.Hardware.Platform {
             int gpuDie;
             if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie)
                 && gpuDie > 0 && gpuDie < Config.MaxBelievableTemperature) {
+
                 gpu = (byte) gpuDie;
                 this.gpuTempObserved = true;
+                this.nvmlWasSource = true;
+                this.gpuFailTicks = 0;
+                this.IsGpuTemperatureTrusted = true;
+
+            } else if(this.nvmlWasSource) {
+
+                // The die sensor has worked before and is not answering now. Do NOT fall
+                // through to GPTM here: it reads around 28 °C under a 79 W load, so taking
+                // it would look like the GPU had suddenly gone cold and would drop the GPU
+                // fan at the exact moment the reading was lost. Hold the last die value.
+                gpu = this.LastGpuTemperature;
+
+                // But do not call it a lost sensor yet. On a hybrid-graphics laptop the
+                // ordinary idle state is a parked GPU with a stale NVML session, and Nvml
+                // deliberately rebuilds that only once a minute rather than every tick.
+                // So a run of failures up to GpuUntrustedGraceTicks is expected and means
+                // nothing; only a run longer than the rebuild interval is a real fault.
+                if(++this.gpuFailTicks >= GpuUntrustedGraceTicks)
+                    this.IsGpuTemperatureTrusted = false;
+
+            } else {
+
+                // No die sensor on this machine at all — GPTM is all there is, and on
+                // boards where it works it is the intended source.
+                this.gpuFailTicks = 0;
+                this.IsGpuTemperatureTrusted = gpu > 0;
+
             }
 
             this.LastGpuTemperature = gpu;

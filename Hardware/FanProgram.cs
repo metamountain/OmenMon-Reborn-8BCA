@@ -65,6 +65,48 @@ namespace OmenMon.Hardware.Platform {
         public bool IsEnabled { get; private set; }
         public bool IsSuspended { get; private set; }
 
+        // Consecutive ticks with no trustworthy CPU temperature. See Update().
+        private int untrustedTicks;
+
+        // True while the CPU reading is not trustworthy. Replaces the old handedBack
+        // flag; the fans are never handed to the firmware now, so there is nothing to
+        // hand back from.
+        private bool cpuUntrusted;
+        private int cpuUntrustedLevel;
+
+        // Ticks of a bad CPU reading before the floor starts rising. Five at the 2 s tick
+        // is ten seconds - long enough that a single collision on the Access_PCI mutex,
+        // which PawnIoAmd retries through, never gets this far.
+        private const int UntrustedTicksBeforeFloor = 5;
+
+        // Where the floor is heading: the level the active curve uses at this
+        // temperature. Taken from the curve rather than hard-coded, so a Silent profile
+        // stays quieter than a Performance one even in this state. 75 °C is warm enough
+        // to be protective and cool enough not to sound like a fault.
+        private const byte UntrustedTargetC = 75;
+
+        // One level - 100 rpm - per tick, in both the CPU and GPU untrusted ramps
+        private const int UntrustedRampStep = 1;
+
+        // The GPU side of the same problem, but ramping the other way: see Update(). The
+        // held GPU value can only be too high, so its floor walks down rather than up.
+        private int gpuUntrustedLevel;
+        private int gpuUntrustedTarget;
+
+        // 2500 rpm: clearly audible, clearly moving air, and well short of the 3800 rpm
+        // the curve reaches under real load. A GPU that is actually hot is not cooled by
+        // this alone, but nothing here substitutes for a working sensor - it is what
+        // keeps the card ventilated until one comes back. Never raises the fan: if the
+        // reading is lost while already below this, the lower level is kept.
+        private const int GpuUntrustedFloor = 25;
+
+        // For the log line, so the number and its meaning cannot drift apart
+        private const string UntrustedGpuGraceDescription = "longer than the NVML rebuild interval";
+
+        // Kept for callers that ask "is the curve in charge right now?" - it is, always,
+        // but not following the curve while the CPU reading is missing.
+        public bool IsHandedBack { get { return this.cpuUntrusted; } }
+
         // Last fan mode and GPU power data before the program started
         private BiosData.FanMode LastFanMode;
         private BiosData.GpuPowerData LastGpuPowerData;
@@ -240,6 +282,57 @@ namespace OmenMon.Hardware.Platform {
             byte cpuTemp = Platform.GetCpuTemperature(true);
             byte gpuTemp = Platform.GetGpuTemperature(false);
 
+            // When the CPU temperature cannot be trusted, keep control and raise the
+            // floor. Do NOT hand the fans back to the firmware.
+            //
+            // Handing back was tried and rejected. The reasoning was sound on paper —
+            // thinkpad-acpi's fan watchdog re-enables firmware control on expiry "to make
+            // sure the fan is never left set to an unsafe level because of userspace
+            // problems", Framework's EC has autofan for the same reason, NBFC's porting
+            // guide tells config authors to find the register value that returns control
+            // to the EC firmware. But on this board the firmware's idea of automatic is
+            // to stop the fans entirely, and it let the CPU reach 94 °C under sustained
+            // all-core load while we watched. Silence is not a safe default here.
+            //
+            // Why the reading is lost at all: the die goes through the cross-process
+            // Access_PCI mutex, and anything else polling the same AMD SMN register —
+            // Core Temp, HWiNFO, Ryzen Master — can make a read fail. Measured: the die
+            // reading died mid-session, the curve then ran on EC 0x57 (firmware string
+            // data, plausible-looking and unable to rise), and the CPU passed 90 °C with
+            // the fans at their 1700 rpm floor. PawnIoAmd now retries and reopens, so
+            // this should be rare; what follows is for when it happens anyway.
+            //
+            // The response is the mirror of the GPU one. There the held value can only be
+            // too high, so the fan eases down to a floor. Here we have no temperature at
+            // all and the machine may be heating, so the floor walks *up* — one step per
+            // tick towards the level the active curve would use at UntrustedTargetC. That
+            // is audible within a few seconds, reaches a genuinely protective speed inside
+            // a minute, and drops straight back to the curve the moment a real reading
+            // returns. It never parks the fans and never goes silent.
+            if(!Platform.IsCpuTemperatureTrusted) {
+
+                if(++this.untrustedTicks >= UntrustedTicksBeforeFloor && !this.cpuUntrusted) {
+                    this.cpuUntrusted = true;
+                    Status(Severity.Important,
+                        "No trustworthy CPU temperature - raising the fan floor, curve suspended");
+                    Config.ErrorLog("FanProgram.CpuUntrusted", null,
+                        "CPU temperature untrusted for " + this.untrustedTicks
+                            + " ticks; holding fan control and walking the floor up towards the "
+                            + UntrustedTargetC + " °C row (fans are NOT handed to the firmware)");
+                }
+
+            } else if(this.cpuUntrusted || this.untrustedTicks > 0) {
+
+                if(this.cpuUntrusted) {
+                    this.cpuUntrusted = false;
+                    this.cpuUntrustedLevel = 0;
+                    Status(Severity.Notice, "CPU temperature recovered - resuming the curve");
+                    Config.ErrorLog("FanProgram.CpuUntrusted", null, "CPU temperature recovered, resuming the curve");
+                }
+                this.untrustedTicks = 0;
+
+            }
+
             // GPU-temperature fallback for boards without a real GPU temp sensor.
             // The two cases we need to distinguish when gpuTemp == 0:
             //   (a) discrete GPU exists but is currently powered off (issue #66) —
@@ -271,6 +364,90 @@ namespace OmenMon.Hardware.Platform {
             byte[] cpuFans = GetFanLevel(cpuLevel);
             byte[] gpuFans = GetFanLevel(gpuLevel);
             byte[] fans = new byte[] { cpuFans[0], gpuFans[1] };
+
+            // The CPU floor from above, walked up one step per tick. Applied here rather
+            // than earlier so it can never lower what the curve asked for — if the GPU
+            // side or a still-valid reading wants more air, that wins.
+            if(this.cpuUntrusted) {
+
+                byte target = GetFanLevel(GetTemperatureLevel(UntrustedTargetC))[0];
+                if(this.cpuUntrustedLevel == 0)
+                    this.cpuUntrustedLevel = fans[0];
+                if(this.cpuUntrustedLevel < target)
+                    this.cpuUntrustedLevel += UntrustedRampStep;
+                if(this.cpuUntrustedLevel > target)
+                    this.cpuUntrustedLevel = target;
+
+                if(fans[0] < this.cpuUntrustedLevel)
+                    fans[0] = (byte) this.cpuUntrustedLevel;
+
+            }
+
+            // Second line of defence for the GPU, for the case where the die reading is
+            // lost and cannot be recovered (Nvml rebuilds the session on the tick it goes
+            // stale, so getting here means even that failed).
+            //
+            // Platform holds the last die value rather than falling back to GPTM, so the
+            // curve above is running on a number that was true a moment ago and is drifting
+            // out of date. Freezing the fans there would be wrong in the other direction —
+            // if it happened at the end of a load the GPU would be held loud for nothing.
+            //
+            // So: don't hold, and don't drop. Wind down one step — 100 rpm — per tick
+            // towards a floor that still moves real air, and stop there until a
+            // trustworthy reading comes back. The GPU finishes cooling on the way down,
+            // and the floor means even a permanently dead sensor leaves the card
+            // ventilated instead of silently unattended.
+            //
+            // Strictly downward, never upward. A parked GPU at idle is indistinguishable
+            // from a lost sensor from in here, and an earlier version of this treated the
+            // floor as a minimum — which spun an idle machine's GPU fan up to 2500 rpm for
+            // no reason at all. Platform's grace period makes that state rare; this makes
+            // it harmless when it happens anyway.
+            if(!Platform.IsGpuTemperatureTrusted) {
+
+                if(this.gpuUntrustedLevel == 0) {
+
+                    // Enter at whatever the fan is doing right now, and never above it.
+                    // This is a wind-down, not a boost: if the reading is lost while the
+                    // fan is already at its idle floor, the floor is where it stays.
+                    // Getting this wrong once made an idle machine spin up to 2500 rpm
+                    // because a parked GPU looks exactly like a lost sensor.
+                    this.gpuUntrustedLevel = fans[1];
+                    this.gpuUntrustedTarget = Math.Min((int) fans[1], GpuUntrustedFloor);
+
+                    if(this.gpuUntrustedLevel > this.gpuUntrustedTarget) {
+                        Status(Severity.Important,
+                            "GPU temperature untrusted - easing the GPU fan down to "
+                                + this.gpuUntrustedTarget * 100 + " rpm");
+                        Config.ErrorLog("FanProgram.GpuUntrusted", null,
+                            "NVML die reading lost for " + UntrustedGpuGraceDescription
+                                + "; ramping the GPU fan from " + this.gpuUntrustedLevel * 100
+                                + " rpm towards " + this.gpuUntrustedTarget * 100 + " rpm");
+                    } else {
+                        Config.ErrorLog("FanProgram.GpuUntrusted", null,
+                            "NVML die reading lost; GPU fan held at its current "
+                                + this.gpuUntrustedLevel * 100 + " rpm");
+                    }
+
+                }
+
+                if(this.gpuUntrustedLevel > this.gpuUntrustedTarget)
+                    this.gpuUntrustedLevel -= UntrustedRampStep;
+                if(this.gpuUntrustedLevel < this.gpuUntrustedTarget)
+                    this.gpuUntrustedLevel = this.gpuUntrustedTarget;
+
+                // Never below what the curve already asked for: if the CPU side or a
+                // stale-but-hot held value wants more air, it gets it.
+                if(fans[1] < this.gpuUntrustedLevel)
+                    fans[1] = (byte) this.gpuUntrustedLevel;
+
+            } else if(this.gpuUntrustedLevel != 0) {
+
+                this.gpuUntrustedLevel = 0;
+                this.gpuUntrustedTarget = 0;
+                Status(Severity.Notice, "GPU temperature recovered - resuming the GPU curve");
+
+            }
 
             // Keep GetMaxTemperature populated for thermal-panic and tray icon
             // (sensors are already up-to-date, no extra EC reads)

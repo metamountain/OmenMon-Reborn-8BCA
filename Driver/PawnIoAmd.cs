@@ -128,6 +128,12 @@ namespace OmenMon.Driver {
                 Close();
             }
 
+            // Record the outcome. Whether the CPU temperature is the die or a fallback is
+            // exactly what needs to be known after a deploy, and it is invisible from the
+            // window — a failed die read looked like a healthy 34 °C idle while the CPU
+            // was actually above 90.
+            OmenMon.Library.Config.ErrorLog("PawnIoAmd.Open", null, status);
+
         }
 
         public static void Close() {
@@ -163,13 +169,42 @@ namespace OmenMon.Driver {
         // Current Tctl/Tdie in degrees Celsius.
         // Opens on first use — Open() is idempotent and returns immediately once tried,
         // so the probe it runs cannot recurse back into here
+        // Consecutive failed reads, and when the module was last reopened
+        private static int failCount;
+        private static DateTime lastReopen = DateTime.MinValue;
+
         public static bool TryGetCpuTemperature(out double celsius) {
             celsius = 0.0;
             if(!tried)
                 Open();
+
             uint raw;
-            if(!TryReadSmn(SmnThmTconCurTmp, out raw))
-                return false;
+            if(!TryReadSmn(SmnThmTconCurTmp, out raw)) {
+
+                // Recover instead of latching dead. Open() sets tried = true on its first
+                // attempt and never runs again, so a single failed read used to disable
+                // the die sensor for the whole life of the process — and the caller then
+                // fell back to a sensor that cannot rise. Observed exactly that: the
+                // reading worked at 20:52, failed once, and stayed at a fabricated 34 °C
+                // through a burn that had the CPU above 90.
+                //
+                // A read goes through the cross-process Access_PCI mutex, so a failure is
+                // usually contention, not a broken module — transient by nature, and worth
+                // retrying. Reopening is rate-limited so a genuinely dead module is not
+                // hammered once per tick.
+                if(++failCount >= 3 && (DateTime.UtcNow - lastReopen).TotalSeconds >= 30) {
+                    lastReopen = DateTime.UtcNow;
+                    failCount = 0;
+                    Close();
+                    tried = false;
+                    Open();
+                    if(!TryReadSmn(SmnThmTconCurTmp, out raw))
+                        return false;
+                } else {
+                    return false;
+                }
+            }
+            failCount = 0;
 
             // A register that reads back all-zeroes or all-ones is not a temperature
             if(raw == 0 || raw == 0xFFFFFFFF)

@@ -211,7 +211,7 @@ namespace OmenMon.Library {
         // actionable — on this hardware it is almost always HP's own Omen Gaming Hub
         // background service, which polls the EC on its own schedule.
         private static readonly string[] EcContenderNames = {
-            "OmenCommandCenterBackground", "OMEN Gaming Hub", "HPOmenCap",
+            "OmenCommandCenterBackground", "OMEN Gaming Hub", "OmenCap", "HPOmen",
             "HP.Omen.Command.Center", "HPSystemEventUtility", "HPSysInfoCLI",
             "LibreHardwareMonitor", "OpenHardwareMonitor", "HWiNFO64", "HWiNFO32",
             "AIDA64", "RTSS", "MSIAfterburner", "SpeedFan", "NBFC", "FanControl"
@@ -230,8 +230,15 @@ namespace OmenMon.Library {
                             found.Add(p.ProcessName + "(pid " + p.Id + ", second instance)");
                             continue;
                         }
+                        // Substring, not exact match. Exact matching reported "none
+                        // detected" on a machine that was in fact running OmenCap and
+                        // HPSystemEventUtilityBackground — HP's own EC software — because
+                        // the list held "HPOmenCap" and "HPSystemEventUtility". That false
+                        // negative led straight to the wrong conclusion, that OmenMon was
+                        // only ever contending with itself.
                         foreach(string name in EcContenderNames)
-                            if(string.Equals(p.ProcessName, name, StringComparison.OrdinalIgnoreCase)) {
+                            if(p.ProcessName.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                                || name.IndexOf(p.ProcessName, StringComparison.OrdinalIgnoreCase) >= 0) {
                                 found.Add(p.ProcessName + "(pid " + p.Id + ")");
                                 break;
                             }
@@ -282,7 +289,8 @@ namespace OmenMon.Library {
             // lock, so logging all of them would bury everything else in the file.
             if(!EcLockQuiet || count <= 5 || count % 25 == 0)
                 Config.ErrorLog("Hw.EcLockTimeout", null,
-                    "waited " + Config.EcMutexTimeout + " ms for Global\\Access_EC"
+                    "gave up after " + Config.EcMutexTotalTimeout + " ms of retries ("
+                        + Config.EcMutexTimeout + " ms per attempt) for Global\\Access_EC"
                         + "; timeout #" + count
                         + (EcLockQuiet ? " (quiet, retried on the next tick)" : " (user-visible)")
                         + "; other EC users: " + EcContenders());

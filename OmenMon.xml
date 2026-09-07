@@ -109,7 +109,7 @@
         <!-- Fan countdown timer will be extended by this value [s] -->
         <FanCountdownExtendInterval>120</FanCountdownExtendInterval>
         <!-- Fan countdown extension threshold [s] -->
-        <FanCountdownExtendThreshold>5</FanCountdownExtendThreshold>
+        <FanCountdownExtendThreshold>60</FanCountdownExtendThreshold>
         <!-- Minimum and maximum fan level thresholds [krpm] -->
         <FanLevelMax>55</FanLevelMax>
         <FanLevelMin>20</FanLevelMin>
