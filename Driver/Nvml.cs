@@ -258,7 +258,9 @@ namespace OmenMon.Driver {
                 stale = false;
 
                 uint mw;
-                if(nvmlDeviceGetEnforcedPowerLimit(device, out mw) != Success || mw == 0)
+                int rc = nvmlDeviceGetEnforcedPowerLimit(device, out mw);
+
+                if(rc != Success || mw == 0)
                     return false;
 
                 int value = (int) ((mw + 500) / 1000);

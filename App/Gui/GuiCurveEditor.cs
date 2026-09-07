@@ -67,6 +67,20 @@ namespace OmenMon.AppGui {
                     pts.Add(new int[] { kv.Key,
                         kv.Value.Length > 0 ? kv.Value[0] : LMin,
                         kv.Value.Length > 1 ? kv.Value[1] : LMin });
+
+            // Widen the axis to whatever the profile actually contains.
+            //
+            // The range came only from Config.FanLevelMin/Max — 18 to 58 here — while
+            // Silent's floor is 17 and its top is 57. A point outside the axis was
+            // clamped onto it by Clamp() in the drawing and dragging paths, so the editor
+            // showed a curve the profile does not have, and saving would have written the
+            // clamped values back. The config bounds are what the *editor* offers when
+            // there is nothing to show; they are not a claim about what a profile holds.
+            foreach(int[] p in pts)
+                for(int i = 1; i <= 2; i++) {
+                    if(p[i] < this.LMin) this.LMin = p[i];
+                    if(p[i] > this.LMax) this.LMax = p[i];
+                }
             if(pts.Count < 2) {
                 pts.Clear();
                 pts.Add(new int[] { TMin, LMin, LMin });

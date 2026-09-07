@@ -444,8 +444,35 @@ namespace OmenMon.AppGui {
         // Spells out, in the section itself, exactly what the active preset did.
         // The Windows mode line carries its wattage band so it is obvious which
         // power mode belongs to which CPU limit.
+        // The arguments of the last call, so the line can be recomposed when only the
+        // live part of it has changed. See RefreshPwrGpu().
+        private string pwrWinMode, pwrCharacter;
+        private byte pwrPl1, pwrPl2, pwrPl4;
+        private bool pwrWinOk, pwrShown;
+        private int pwrGpuTick;
+
+        // The GPU limit is a live value, and the panel was showing it as a fixed one.
+        //
+        // It is written once when a preset is applied and then left, so the figure caught
+        // at startup stayed on screen for the life of the process. That is how the panel
+        // came to read 105 W while nvidia-smi said 80 and both were right: 105 is this
+        // card's 80 W TGP plus 25 W of Dynamic Boost, which is genuinely in force while
+        // the GPU is awake — opening NVML at startup wakes it — and drops back to 80 once
+        // it parks. A number that moves has to be re-read, not captured.
+        private void RefreshPwrGpu() {
+            if(!this.pwrShown) return;
+            if(++this.pwrGpuTick < 4) return;      // every fourth monitor pass is plenty
+            this.pwrGpuTick = 0;
+            ShowPwrState(this.pwrWinMode, this.pwrPl1, this.pwrPl2, this.pwrPl4,
+                this.pwrCharacter, this.pwrWinOk);
+        }
+
         private void ShowPwrState(string winMode, byte pl1, byte pl2, byte pl4,
                                   string character, bool winOk) {
+
+            this.pwrWinMode = winMode; this.pwrCharacter = character;
+            this.pwrPl1 = pl1; this.pwrPl2 = pl2; this.pwrPl4 = pl4;
+            this.pwrWinOk = winOk; this.pwrShown = true;
             // Both processors' limits, because a "power mode" that only states the CPU's
             // is half the answer — on this machine the GPU's ceiling moves between 80 and
             // 140 W and is the larger number of the two.
@@ -456,7 +483,7 @@ namespace OmenMon.AppGui {
             // one block without saying so would imply the buttons above change both.
             int gpuW;
             string gpuLine = OmenMon.Driver.Nvml.TryGetGpuPowerLimit(out gpuW)
-                ? string.Format("GPU limit: {0} W in force — set by the fan profile, not by this", gpuW)
+                ? string.Format("GPU limit: {0} W — set by the fan profile", gpuW)
                 : "GPU limit: unavailable (NVML)";
 
             this.LblPwrHint.Text = string.Format(
@@ -1449,7 +1476,6 @@ namespace OmenMon.AppGui {
         // OmenMon.exe alone - see Library/Update.cs. OmenMon.xml carries the user's fan
         // curves and keyboard presets in the same file as the shipped defaults, so an
         // update that replaced it would delete work with no way back.
-        private UpdateCheck.Info updateFound;
         private string updateArchive;
         private bool updateBusy;
 
@@ -1498,7 +1524,6 @@ namespace OmenMon.AppGui {
 
             this.updateBusy = false;
             this.BtnUpdate.Enabled = true;
-            this.updateFound = info;
             this.updateArchive = archive;
 
             if(!info.Ok) {
@@ -1621,6 +1646,10 @@ namespace OmenMon.AppGui {
             MonitorSnapshot s = Context.Monitor != null ? Context.Monitor.Current : null;
             if(s == null)
                 return;
+
+            // The GPU power limit moves with Dynamic Boost, so it is re-read here rather
+            // than left at whatever it was when a preset was last applied
+            RefreshPwrGpu();
 
             // Update the system info string.
             // Same fields as before, but the groups are fenced off with a dim middle dot

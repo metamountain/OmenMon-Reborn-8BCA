@@ -336,22 +336,6 @@ namespace OmenMon.AppGui {
 
         }
 
-        // Updates the custom colors in the color picker
-        public int[] UpdateColorPicker(int[] currentColors) {
-
-            // Start with the current colors
-            int[] customColors = currentColors;
-
-            // Update the values for the four zones
-            customColors[0] = GetColorReverse(BiosData.KbdZone.Right);
-            customColors[1] = GetColorReverse(BiosData.KbdZone.Middle);
-            customColors[8] = GetColorReverse(BiosData.KbdZone.Left);
-            customColors[9] = GetColorReverse(BiosData.KbdZone.Wasd);
-
-            // Return the updated colors
-            return customColors;
-
-        }
 #endregion
 
     }

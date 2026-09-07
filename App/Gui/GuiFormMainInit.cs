@@ -59,15 +59,11 @@ namespace OmenMon.AppGui {
         private NumericUpDown NumCurveTemp, NumCurveRpm;
 
         // Shown when the pointer is not over the curve
-        // Shown while one of the three reference curves is selected
-        private const string LockedHelpText =
-            "Reference curve - read-only. Press + to make an editable copy.";
-
         // Longest of the button's states, so its width is fixed once at startup
         private const string UpdateTextIdle = "Check for updates";
 
         private const string CurveHelpText =
-            "Left-click to add a point · drag to move · right-click to remove";
+            "Click to add · drag to move · right-click removes";
         private Label LblFanUnitRte;
         private Label LblFanUnitVal;
         private Label LblHdrRpm;
@@ -391,10 +387,11 @@ namespace OmenMon.AppGui {
 #region Section: Fan  (profiles only, with the curve edited inline)
             int fa = HDR;
 
-            MakeMini("Profile", new Point(PAD, fa + 3), capFont, this.GrpFan);
+            // No "Profile" caption: the panel is already titled "Fan profile", and the
+            // row needs its 64 px. The combo starts on the margin like everything else.
             this.CmbFanProg.DropDownStyle = ComboBoxStyle.DropDownList;
-            this.CmbFanProg.Location = new Point(COL2, fa);
-            this.CmbFanProg.Size = new Size(120, 24);
+            this.CmbFanProg.Location = new Point(PAD, fa);
+            this.CmbFanProg.Size = new Size(150, 24);
 
             Action<Button, string, int, int> mkFanBtn = (b, t, x, w2) => {
                 b.Text = t; b.Location = new Point(x, fa - 1); b.Size = new Size(w2, 26);
@@ -412,7 +409,7 @@ namespace OmenMon.AppGui {
             // 68 px wide. Sizing Apply from its text moved its right edge to 427, one
             // pixel from Save curve at 428, which is what "not centred" was: the two
             // buttons had no gutter between them while everything else in the row did.
-            int fx = COL2 + 120 + GUT;                       // after the profile combo
+            int fx = PAD + 150 + GUT;                        // after the profile combo
             foreach(Button b in new Button[] {
                 this.BtnProfAdd, this.BtnProfDel, this.BtnProfRen }) {
                 mkFanBtn(b, b == this.BtnProfAdd ? "+" : b == this.BtnProfDel ? "−" : "✎", fx, 28);
@@ -488,7 +485,12 @@ namespace OmenMon.AppGui {
                 this.GrpFan.Controls.Add(n);
             };
             mkPtNum(this.NumCurveTemp, PTMPX, PTMPW, 30, 95);
-            mkPtNum(this.NumCurveRpm, PRPMX, PRPMW, Config.FanLevelMin * 100, Config.FanLevelMax * 100);
+
+            // Same reasoning as the curve's own axis: the spinner has to be able to
+            // express a value the profile already holds. FanLevelMin is 20 while Silent
+            // runs at 17, so a floor of FanLevelMin * 100 made the real value untypeable.
+            mkPtNum(this.NumCurveRpm, PRPMX, PRPMW,
+                LowestProfileLevel() * 100, Config.FanLevelMax * 100);
             this.NumCurveRpm.Increment = 100;
             MakeMiniRight("°C", new Point(PTMPX + PTMPW, fa + 33), PUNITW, capFont, this.GrpFan);
             this.Tip.SetToolTip(this.NumCurveTemp,
@@ -1019,7 +1021,7 @@ namespace OmenMon.AppGui {
         private void EventCurveHover(object sender, EventArgs e) {
             var h = this.Curve.Hover;
             if(!h.Valid) {
-                this.LblCurveInfo.Text = this.Curve.ReadOnly ? LockedHelpText : CurveHelpText;
+                this.LblCurveInfo.Text = CurveHelpText;
                 return;
             }
             this.LblCurveInfo.Text = (h.Gpu ? "GPU" : "CPU") + "  "
@@ -1078,6 +1080,21 @@ namespace OmenMon.AppGui {
                 BackColor = Color.Transparent
             };
             parent.Controls.Add(l);
+        }
+
+        // The lowest fan level any configured profile actually uses, floored at the
+        // configured minimum. Config.FanLevelMin says 20 and the profiles go to 17 — an
+        // unreconciled pair noted in CLAUDE.md — and the UI has to accommodate whichever
+        // is smaller rather than silently clamping the user's own curve.
+        private static int LowestProfileLevel() {
+            int lowest = Config.FanLevelMin;
+            try {
+                foreach(var prog in Config.FanProgram.Values)
+                    foreach(var lvl in prog.Level.Values)
+                        foreach(byte v in lvl)
+                            if(v > 0 && v < lowest) lowest = v;
+            } catch { }
+            return Math.Max(0, lowest);
         }
 
         // Width a button needs for its own label, never less than the layout asked for.

@@ -140,9 +140,6 @@
       <SubType>Component</SubType>
     </Compile>
     <Compile Include="Library\Gui\GdiFont.cs" />
-    <Compile Include="Library\Gui\ColorDlgEx.cs">
-      <SubType>Component</SubType>
-    </Compile>
     <Compile Include="Library\Gui\ProgressBarEx.cs">
       <SubType>Component</SubType>
     </Compile>
