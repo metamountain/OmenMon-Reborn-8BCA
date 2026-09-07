@@ -242,11 +242,32 @@ namespace OmenMon.Driver {
             if(device == IntPtr.Zero)
                 return false;
             try {
+
+                // Through the same liveness check as the temperature, and for the same
+                // reason. A stale session answers every field from what it last recorded,
+                // with NVML_SUCCESS — power is one of the fields measured doing exactly
+                // that (590 W against a real 12.3 W). Reading it without this guard
+                // reported 105 W while nvidia-smi said 80: a number with no relation to
+                // anything, presented as a fact about the hardware.
+                if(!IsSessionLive()) {
+                    staleCount++;
+                    stale = true;
+                    if(!TryReinit() || !IsSessionLive())
+                        return false;
+                }
+                stale = false;
+
                 uint mw;
-                if(nvmlDeviceGetEnforcedPowerLimit(device, out mw) != 0 || mw == 0)
+                if(nvmlDeviceGetEnforcedPowerLimit(device, out mw) != Success || mw == 0)
                     return false;
-                watts = (int) ((mw + 500) / 1000);
+
+                int value = (int) ((mw + 500) / 1000);
+                if(value <= 0 || value > 400)
+                    return false;
+
+                watts = value;
                 return true;
+
             } catch {
                 return false;
             }

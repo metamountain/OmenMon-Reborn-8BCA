@@ -235,13 +235,18 @@ namespace OmenMon.AppGui {
             const int WIN = 960;                                 // square, client area
             const int CROSS = 20;                                // the black cross between quadrants
             const int GAP = 8;                                   // minor gap, within a quadrant
-            const int PAD_ = 10;                                 // window margin (GuiTheme.Pad)
 
-            // Exact squares: 960 = 10 + 460 + 20 + 460 + 10, both ways. The 20 px cross
-            // and the 10 px border are the window's black ground showing through between
-            // the panels, which are the only thing painted in the panel colour.
-            const int W = (WIN - 2 * PAD_ - CROSS) / 2;          // one column = 460
-            const int ROW = (WIN - 2 * PAD_ - CROSS) / 2;        // one row    = 460
+            // The border around the quadrants is the same width as the cross between
+            // them, so every black channel in the window measures the same. It was 10
+            // against the cross's 20, which made the frame read as a different, thinner
+            // thing than the division it was framing.
+            const int BORDER = CROSS;
+
+            // Exact squares: 960 = 20 + 450 + 20 + 450 + 20, both ways. The cross and the
+            // border are the window's black ground showing between the panels, which are
+            // the only thing painted in the panel colour.
+            const int W = (WIN - 2 * BORDER - CROSS) / 2;        // one column = 450
+            const int ROW = (WIN - 2 * BORDER - CROSS) / 2;      // one row    = 450
             const int HDR = GuiTheme.CaptionBand; // first content row, below the caption rule
             const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
 
@@ -853,8 +858,8 @@ namespace OmenMon.AppGui {
             // Tile the four quadrants. Left column monitors and edits — the two graphs;
             // right column configures. Nothing overlaps, nothing scrolls, and every panel
             // is on screen at once.
-            int colL = PAD, colR = PAD + W + CROSS;
-            int rowT = PAD, rowB = PAD + ROW + CROSS;
+            int colL = BORDER, colR = BORDER + W + CROSS;
+            int rowT = BORDER, rowB = BORDER + ROW + CROSS;
 
             this.GrpChart.Location = new Point(colL, rowT);   // history
             this.GrpFan.Location   = new Point(colR, rowT);   // profile + curve
