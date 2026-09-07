@@ -194,13 +194,29 @@ namespace OmenMon.AppGui {
             ((System.ComponentModel.ISupportInitialize) this.TrkFan0Lvl).BeginInit();
             ((System.ComponentModel.ISupportInitialize) this.TrkFan1Lvl).BeginInit();
 
-            const int W = 560;                 // section content width
-            // Sections span the full client width, so the only horizontal margin in the
-            // window is PAD. It used to be GX 16 *plus* PAD, which put text 26 px from
-            // the edge and meant "the margin" was two numbers that had to be added up.
-            const int GX = 0;                  // sections are full-width
+            // Quad layout: a square window divided into four areas, two columns by two
+            // rows, every panel tiled and nothing overlapping or hidden.
+            //
+            // This replaces a single 560 px column that had to be either scrolled or
+            // squeezed. The content was ~1375 px tall against 1112 px of screen while the
+            // window used 560 px of a 2048 px display — the height problem was really a
+            // refusal to use the width. Two columns halve the stack and the graphs stop
+            // being the thing that pays for every other section.
+            //
+            //     +---------------------+---------------------+
+            //     |  History (graph)    |  Fan (profile+curve)|   monitoring / control
+            //     +---------------------+---------------------+
+            //     |  Keyboard           |  Sensors            |
+            //     |                     |  Power              |
+            //     |                     |  System             |
+            //     +---------------------+---------------------+
+            //
+            const int WIN = 960;                                 // square, client area
+            const int GAP = 8;                                   // between panels
+            const int PAD_ = 10;                                 // window margin (GuiTheme.Pad)
+            const int W = (WIN - 2 * PAD_ - GAP) / 2;            // one column = 466
+            const int ROW = (WIN - 2 * PAD_ - GAP) / 2;          // one row    = 466
             const int HDR = GuiTheme.CaptionBand; // first content row, below the caption rule
-            const int GAP = 8;                 // gap between stacked sections
             const int PAD = GuiTheme.Pad;      // inner padding; the section caption and rule use it too
 
             // One horizontal grid for the whole window, so nothing is placed by eye.
@@ -220,49 +236,12 @@ namespace OmenMon.AppGui {
             const int TMPX = COL2 + RPMW + GUT;     // °C column, running to W - PAD
             Color cVal = GuiTheme.Text, cCap = GuiTheme.Muted;
 
-            // The whole window has to fit within MAX_WINDOW_H, title bar included -- six
-            // stacked sections had grown it to 1272 px, taller than the work area on a
-            // 1152 px screen, so the bottom of it was simply unreachable.
-            //
-            // Every section except the two graphs is a fixed height, so those are
-            // budgeted first and the graphs divide whatever is left. That keeps the
-            // constraint true by construction: move a control and the graphs absorb it,
-            // instead of the window silently growing past the screen again.
-            // How tall the window may be on screen. The layout is no longer required to
-            // fit inside it: the form scrolls (see the end of this method), so the graphs
-            // are sized to be readable and the window shows as much of the result as the
-            // display has room for.
-            //
-            // This is the resolution of a constraint that could not be satisfied. A
-            // keyboard picture that spans the content width is 177 px tall; two graphs
-            // worth looking at are ~240 px each; the four fixed sections are 640. That is
-            // 1375 px of content against 1112 px of work area, and no arrangement of
-            // them fits. Squeezing the graphs was what "too squeezed" meant, and shrinking
-            // the keyboard was what broke its alignment with the margin. Scrolling is the
-            // only answer that does not sacrifice one of them.
-            const int MAX_WINDOW_H = 1080;
-
-            // What the graphs get, rather than what is left over after everything else
-            const int H_GRAPH = 240;
-
             const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
             const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
 
-            // The keyboard picture's height, and the one knob for trading keyboard size
-            // against graph size — they come out of the same 1080 px.
-            //
-            // Filling the content width would make it 177 px tall (540 x 393 / 1200) and
-            // leave the two graphs on their 96 px floor, which is what "squeezed" was.
-            // At 120 the picture is still drawn 366 x 120 — more than five times the area
-            // of the 158 x 52 it started as, with each zone 90 px or wider — and the
-            // graphs get the 57 px back.
-            //
-            // The control keeps the full content width and Zoom centres the picture in
-            // it. The empty side bands are harmless now that GuiKbd.SetZone maps clicks
-            // against the drawn rectangle and ignores anything outside it.
-            // Full content width, so the picture's edges sit on the same 10 px margin as
-            // every caption, rule and control. Its height follows from the native aspect
-            // of Resources\Keyboard.png and is not a free choice.
+            // The keyboard picture spans its column, so its edges sit on the same margin
+            // as every caption, rule and control. The height follows from the native
+            // aspect of Resources\Keyboard.png and is not a free choice.
             const int KBD_IMG_W = 1200, KBD_IMG_H = 393;         // Resources\Keyboard.png
             const int H_KBDPIC = (W - 2 * GuiTheme.Pad) * KBD_IMG_H / KBD_IMG_W;
 
@@ -272,15 +251,15 @@ namespace OmenMon.AppGui {
 
             const int H_SYS = HDR + 88;    // autostart, exit, three lines of Consolas + margin
 
-            // Chrome is the non-client height of a FixedSingle form with a caption
-            int chrome = SystemInformation.CaptionHeight
-                + 2 * SystemInformation.FixedFrameBorderSize.Height;
-
-            // Both graphs get a real height instead of dividing the remainder. They were
-            // the only elastic thing in a window that had to fit a screen, so every time
-            // another section grew they paid for it — twice today, down to 96 px each.
-            int hChart = H_GRAPH;
-            int hCurve = H_GRAPH;
+            // The two graphs fill their quadrants. They are still the elastic thing in the
+            // layout, but a quadrant is a fixed share of the window rather than whatever
+            // the other five sections left over — which is how they ended up at 96 px.
+            //
+            // The curve gives up 64 px the history does not need: the profile row above it
+            // and the readout / entry row below it.
+            const int H_FANROWS = 64;
+            int hChart = ROW - HDR + 4;                  // GrpChart is HDR + hChart - 4
+            int hCurve = ROW - HDR - H_FANROWS - PAD;
 
 #region Section: Graph
             // Pulled up into the caption band to give the plot height, but never above the
@@ -372,7 +351,7 @@ namespace OmenMon.AppGui {
             MakeMini("Profile", new Point(PAD, fa + 3), capFont, this.GrpFan);
             this.CmbFanProg.DropDownStyle = ComboBoxStyle.DropDownList;
             this.CmbFanProg.Location = new Point(COL2, fa);
-            this.CmbFanProg.Size = new Size(156, 24);
+            this.CmbFanProg.Size = new Size(120, 24);
 
             Action<Button, string, int, int> mkFanBtn = (b, t, x, w2) => {
                 b.Text = t; b.Location = new Point(x, fa - 1); b.Size = new Size(w2, 26);
@@ -390,7 +369,7 @@ namespace OmenMon.AppGui {
             // 68 px wide. Sizing Apply from its text moved its right edge to 427, one
             // pixel from Save curve at 428, which is what "not centred" was: the two
             // buttons had no gutter between them while everything else in the row did.
-            int fx = COL2 + 156 + GUT;                       // after the profile combo
+            int fx = COL2 + 120 + GUT;                       // after the profile combo
             foreach(Button b in new Button[] {
                 this.BtnProfAdd, this.BtnProfDel, this.BtnProfRen }) {
                 mkFanBtn(b, b == this.BtnProfAdd ? "+" : b == this.BtnProfDel ? "−" : "✎", fx, 28);
@@ -410,12 +389,24 @@ namespace OmenMon.AppGui {
             // what "Apply" needs — in Segoe UI as well as Inter, so this predates the
             // font change and was simply never measured.
             this.BtnFanSet.Text = "Apply";
-            this.BtnFanSet.Location = new Point(352, fa - 1);
+            this.BtnFanSet.Location = new Point(fx, fa - 1);
             this.BtnFanSet.Size = new Size(FitButton(this.BtnFanSet, 68), 26);
+            fx += this.BtnFanSet.Width + GUT;
 
+            // Restores a button that went missing when this row was rewritten onto the
+            // gutter: the call that positioned and labelled it was dropped, so it sat at
+            // (0, 0) with no text, on top of the Profile caption. "Save" rather than
+            // "Save curve" because the curve it saves is directly below it.
+            mkFanBtn(this.BtnCurveEdit, "Save", fx, FitButton(this.BtnCurveEdit, 56));
+            this.Tip.SetToolTip(this.BtnCurveEdit,
+                "Save the edited curve to this profile. Reference profiles are read-only.");
+
+            // The countdown lives in the panel's caption band, right-aligned. That strip
+            // is empty in every panel, the value is a status readout rather than a
+            // control, and the profile row needs its width for buttons.
             this.LblFanCountdown.Font = capFont; this.LblFanCountdown.ForeColor = cCap;
-            this.LblFanCountdown.Location = new Point(W - PAD - 30, fa + 3);
-            this.LblFanCountdown.Size = new Size(30, 20);
+            this.LblFanCountdown.Location = new Point(W - PAD - 44, 0);
+            this.LblFanCountdown.Size = new Size(44, GuiTheme.CaptionRuleY);
             this.LblFanCountdown.TextAlign = ContentAlignment.MiddleRight;
 
             // The row above the curve does two jobs: it says what the pointer is over,
@@ -751,13 +742,20 @@ namespace OmenMon.AppGui {
             this.GrpSys.Text = Config.Locale.Get(Config.L_GUI_MAIN + Gui.G_SYS);   // see GrpKbd above
 #endregion
 
-            // Stack the sections with a consistent gap
-            this.GrpChart.Location = new Point(GX, GuiTheme.Pad);
-            this.GrpTmp.Location = new Point(GX, this.GrpChart.Bottom + GAP);
-            this.GrpFan.Location = new Point(GX, this.GrpTmp.Bottom + GAP);
-            this.GrpPwr.Location = new Point(GX, this.GrpFan.Bottom + GAP);
-            this.GrpKbd.Location = new Point(GX, this.GrpPwr.Bottom + GAP);
-            this.GrpSys.Location = new Point(GX, this.GrpKbd.Bottom + GAP);
+            // Tile the four quadrants. Left column monitors and edits — the two graphs;
+            // right column configures. Nothing overlaps, nothing scrolls, and every panel
+            // is on screen at once.
+            int colL = PAD, colR = PAD + W + GAP;
+            int rowT = PAD, rowB = PAD + ROW + GAP;
+
+            this.GrpChart.Location = new Point(colL, rowT);   // history
+            this.GrpFan.Location   = new Point(colR, rowT);   // profile + curve
+            this.GrpKbd.Location   = new Point(colL, rowB);   // keyboard
+
+            // The bottom-right quadrant holds the three short panels, stacked
+            this.GrpTmp.Location = new Point(colR, rowB);
+            this.GrpPwr.Location = new Point(colR, this.GrpTmp.Bottom + GAP);
+            this.GrpSys.Location = new Point(colR, this.GrpPwr.Bottom + GAP);
 
 #region Main Form
             this.Controls.Add(this.GrpChart);
@@ -770,24 +768,11 @@ namespace OmenMon.AppGui {
             try { this.Font = GuiTheme.Ui(GuiTheme.FontBody); } catch { }
             this.AutoScaleMode = AutoScaleMode.None;
             this.AutoSize = false;
-            // Same 10 px below the last section as above the first and beside them all
-            // The content is as tall as it needs to be; the window shows what fits and
-            // scrolls the rest. Everything here is absolutely positioned, which AutoScroll
-            // handles by itself once it knows how far the content extends.
-            //
-            // Without this the six sections had to be squeezed into one screen, and the
-            // graphs — the only elastic thing — absorbed every increase anywhere else.
-            int contentH = this.GrpSys.Bottom + GuiTheme.Pad;
-            int visibleH = Math.Min(contentH, MAX_WINDOW_H - chrome);
-
-            this.AutoScroll = true;
-            this.AutoScrollMinSize = new Size(0, contentH);
-
-            // Leave room for the scrollbar when there will be one, so a vertical bar
-            // cannot start a horizontal one by covering the right-hand margin
-            this.ClientSize = new Size(
-                W + 2 * GX + (contentH > visibleH ? SystemInformation.VerticalScrollBarWidth : 0),
-                visibleH);
+            // Square, and no scrolling. Everything is on screen: the quadrants are sized
+            // from WIN, so the window cannot grow past the display by a section being
+            // added to the stack — there is no stack any more.
+            this.AutoScroll = false;
+            this.ClientSize = new Size(WIN, WIN);
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.HelpButton = true;
             this.Icon = OmenMon.Resources.Icon;
