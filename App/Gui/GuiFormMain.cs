@@ -886,11 +886,22 @@ namespace OmenMon.AppGui {
             // Update the current backlight color in the custom colors
             this.ColorPicker.CustomColors = Kbd.UpdateColorPicker(this.ColorPicker.CustomColors);
 
+            // Put the picker beside the window it belongs to.
+            //
+            // ColorDialogEx has always moved itself on WM_INITDIALOG, but nothing ever
+            // assigned Position, so it took the default Point(0, 0) and the dialog landed
+            // in the top-left corner of the screen — usually a monitor away from the
+            // keyboard you just clicked. It opens to the right of the window now, or to
+            // the left when there is no room, and is clamped to the working area so it
+            // cannot open partly offscreen.
+            this.ColorPicker.Position = PickerPosition();
+
             // Show the dialog
             this.ColorPicker.ShowDialog();
 
             // Note: Color is updated in real time,
             // so there is nothing more to check here
+
 
         }
 
@@ -1397,8 +1408,40 @@ namespace OmenMon.AppGui {
             SyncKbdRgb();
         }
 
-        // Push the selected zone.s colour into the swatch.
-        // In "All" mode the Right zone.s colour represents the (uniform) keyboard.
+        // Where to open the colour picker: docked to the side of this window, top-aligned
+        // with the keyboard section, and always fully on the screen the window is on.
+        //
+        // The system colour dialog is about this size with FullOpen set. It is a constant
+        // rather than a queried value because the size is only knowable once the dialog
+        // exists, and by then it has already been positioned.
+        private Point PickerPosition() {
+
+            const int DlgW = 460, DlgH = 340, Gap = 8;
+
+            Rectangle screen = Screen.FromControl(this).WorkingArea;
+
+            // Prefer the right of the window, fall back to the left, and if neither side
+            // has room (a narrow or heavily scaled display) sit just inside the right edge
+            int x = this.Right + Gap;
+            if(x + DlgW > screen.Right)
+                x = this.Left - Gap - DlgW;
+            if(x < screen.Left)
+                x = Math.Max(screen.Left, screen.Right - DlgW - Gap);
+
+            // Top-aligned with the keyboard section, then clamped so the whole dialog is
+            // on screen even when that section sits low in a tall window
+            int y = this.Top;
+            try {
+                y = this.PointToScreen(this.GrpKbd.Location).Y;
+            } catch { }
+            y = Math.Max(screen.Top, Math.Min(y, screen.Bottom - DlgH));
+
+            return new Point(x, y);
+
+        }
+
+        // Push the selected zone's colour into the swatch.
+        // In "All" mode the Right zone's colour represents the (uniform) keyboard.
         private void SyncKbdRgb() {
             if(Kbd == null)
                 return;

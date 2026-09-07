@@ -227,7 +227,20 @@ namespace OmenMon.AppGui {
 
             const int H_TMP = HDR + 100;   // hero readout: second row at r1 = HDR+58, 40 tall
             const int H_PWR = HDR + 74;    // radios, then the hint label at HDR+36, 34 tall
-            const int H_KBD = HDR + 190;   // keyboard, sliders, preset row, hex field
+
+            // The keyboard picture, at the native aspect of Resources\Keyboard.png. It is
+            // drawn to the full content width, so its height follows from that and is not
+            // free to be chosen — which is why the section height below is derived from
+            // it rather than written down. H_KBD was the literal HDR + 190, correct for
+            // the old 52 px picture and 19 px short once the picture became 177, so the
+            // group box clipped the bottom of the keyboard.
+            const int KBD_IMG_W = 1200, KBD_IMG_H = 393;         // Resources\Keyboard.png
+            const int H_KBDPIC = (W - 2 * GuiTheme.Pad) * KBD_IMG_H / KBD_IMG_W;
+
+            // Picture at HDR + 32, then 8 px, the swatch row, the preset row and the hex
+            // field (96 px in total), then the section's own bottom margin
+            const int H_KBD = HDR + 32 + H_KBDPIC + 8 + 96 + GuiTheme.Pad;
+
             const int H_SYS = HDR + 88;    // autostart, exit, three lines of Consolas + margin
 
             // Chrome is the non-client height of a FixedSingle form with a caption
@@ -553,15 +566,8 @@ namespace OmenMon.AppGui {
             //
             // At the image's own aspect ratio the picture now fills the width exactly, so
             // there is no letterboxing left to mis-map, and each zone is a large target.
-            int kbdH = W - 2 * PAD;
-            try {
-                Image ki = OmenMon.Resources.Keyboard;
-                if(ki != null && ki.Width > 0)
-                    kbdH = (int) Math.Round((double) (W - 2 * PAD) * ki.Height / ki.Width);
-            } catch { }
-
             this.PicKbd.Location = new Point(PAD, HDR + 32);
-            this.PicKbd.Size = new Size(W - 2 * PAD, kbdH);
+            this.PicKbd.Size = new Size(W - 2 * PAD, H_KBDPIC);
             this.PicKbd.SizeMode = PictureBoxSizeMode.Zoom;
             this.PicKbd.TabStop = false;
 
@@ -570,7 +576,7 @@ namespace OmenMon.AppGui {
             // vertical room the keyboard needed to be clickable at all. The swatch shows
             // the selected zone's colour and opens the picker; the hex field below still
             // takes a typed value.
-            int ry = HDR + 40 + kbdH;
+            int ry = HDR + 40 + H_KBDPIC;
             const int SWW = 24;
 
             this.PnlKbdSwatch.Location = new Point(W - PAD - SWW, ry + 3);
