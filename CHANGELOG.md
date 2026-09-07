@@ -5,6 +5,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **GPU temperature could freeze at a wrong value indefinitely.** On a hybrid-graphics
+  laptop the discrete GPU parks when idle, and an NVML session held across that
+  transition keeps returning the last temperature it recorded — with `NVML_SUCCESS`.
+  Measured: 4 of 5 cycles froze, +18 to +27 °C in error, none recovering across 150
+  consecutive polls. `Driver/Nvml.cs` now tests session liveness with
+  `nvmlDeviceGetUtilizationRates` (the only call that returns an error rather than a
+  cached value) and rebuilds the session with `nvmlShutdown` + `nvmlInit_v2`, which
+  restores a correct reading immediately. Rate-limited to one rebuild per 10 s; each is
+  logged as `Nvml.Stale`. Not board-specific — this should apply to any RTX 40-series
+  Optimus laptop.
+- **The previous staleness guard could never fire.** It rejected values repeated 120
+  times unless at or above 60 °C; the stale values are the last ones seen under load,
+  i.e. 60–69 °C. Removed, along with the premise that a frozen reading is detectable
+  from the temperature at all.
+- **Losing the GPU reading no longer drops the GPU fan.** `Platform` holds the last die
+  value and clears the new `IsGpuTemperatureTrusted` rather than falling through to
+  `GPTM`, which reads ~28 °C under a 79 W load. `FanProgram` then eases the GPU fan down
+  100 rpm per tick to a 2500 rpm floor and holds there until a trustworthy reading
+  returns, so the GPU finishes cooling instead of being either frozen loud or dropped
+  silent.
+- **EC lock contention was under-reported.** `EcContenderNames` matched process names
+  exactly, so `OmenCap` and `HPSystemEventUtilityBackground` were logged as "none
+  detected" while running. Matching is now by substring.
+
+### Added
+
+- `Platform.IsGpuTemperatureTrusted`, mirroring the existing CPU flag.
+- `Nvml.GetStaleCount()` / `GetReinitCount()` for diagnostics.
+- Curve points can be typed in exactly, as well as dragged. The row above the graph
+  reports what the pointer is over, and the selected handle is ringed.
+- `+` copies a curve under a new name; `−` deletes and `✎` renames.
+
+### Changed
+
+- **The Default, Silent and Performance curves are read-only.** They are the references
+  the rest of this work is measured against; `+` makes an editable copy for experiments.
+- **Fan curves are anchored at both ends of the axis.** A curve stored as 36–87 °C drew a
+  line stopping in mid-air while `FanProgram` was applying its end rows beyond it. The
+  anchors are inserted at the same levels, so no fan behaviour changes.
+- Curve axis starts at 30 °C, not 20 — nothing on this class of laptop asks for cooling
+  below it. Rows below the start fold onto it, which `GetTemperatureLevel`'s clamping
+  makes equivalent.
+- Monitor thread runs at `AboveNormal`, because it re-arms the EC `0x63` watchdog: a
+  missed slot is a loss of fan control, not a dropped sample.
+- Telemetry cadence 30 s → 8 s. At 30 s a 35 °C cooldown was recorded as one row.
+- Zeroes from a lost EC race are bridged in the monitor snapshot, so the window and tray
+  no longer show "auto" for a fan that is running.
+- Window laid out on a single 8 px grid, fixing two overlapping controls in the power row.
+
+### Documentation
+
+- README: findings 5 (NVML staleness, with a portable code snippet) and 6 (the CPU
+  hand-back and its cost). Power-profile integration documented with the real PL1/PL2/PL4
+  values. Corrected the claims that fan curves run on `max(CPU, GPU)`, that the EC lock
+  is self-contended, and the 15 s program interval.
+
 ## [1.4.12-reborn] - 2026-08-21
 
 > **Model database additions and verification sweep for HP OMEN / Victus field reports.**

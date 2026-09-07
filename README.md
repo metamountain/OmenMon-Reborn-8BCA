@@ -1,7 +1,12 @@
 # OmenMon Reborn 8BCA
 
-Fan control, fan speed and temperature monitoring for one specific HP OMEN laptop,
+Fan control, power profiles and temperature monitoring for one specific HP OMEN laptop,
 where the manufacturer's own software and the general-purpose tools all get it wrong.
+
+**One profile switch sets everything at once** — fan curve, CPU power limit, GPU power
+cap and the BIOS performance mode — instead of leaving them scattered across OMEN Gaming
+Hub, the Windows power settings and a separate fan utility that disagree with each other.
+Silent, Default and Performance are complete power states, not just three fan speeds.
 
 <p align="center">
   <img src="docs/screenshot.jpg" alt="OmenMon Reborn 8BCA main window" width="420">
@@ -18,6 +23,7 @@ where the manufacturer's own software and the general-purpose tools all get it w
 | Model | HP OMEN Gaming Laptop **16-xf0079ng** (product **84S07EA**) |
 | Motherboard | **`8BCA`** |
 | CPU | AMD Ryzen 9 7945HS (or the 7840HS in the same chassis) |
+| GPU | NVIDIA **GeForce RTX 4070 Laptop** (140 W, Optimus / hybrid graphics) |
 | BIOS | F.31 / F.32 |
 | OS | Windows 10 or 11, 64-bit |
 
@@ -34,39 +40,29 @@ measured on one laptop and hard-wired.
 
 ### Why it can actually damage another laptop
 
-This is not boilerplate. There are four concrete ways this build can let a different
-machine overheat:
+This is not boilerplate. Four things stack up:
 
-1. **The safety net was removed.** Upstream ships an auto-calibration wizard that
-   probes unknown hardware and works out a safe configuration. It is deleted here,
-   because on this board it produced confidently wrong answers. On your board there is
-   now nothing to catch a wrong guess.
-2. **The fans are set to run slowly.** The default profile is *Silent*, with a floor of
-   1700 rpm and no increase until 52 °C. That was measured as safe on this chassis with
-   this cooler. A machine with a hotter CPU or a weaker cooler will run hot at those
-   settings.
-3. **The CPU temperature may read wrong, and the fans follow it.** Temperature comes
-   from the AMD die sensor. On an Intel machine that source is unavailable, so it falls
-   back to the laptop's own sensor — which on some HP boards reports a number that never
-   changes. Fan curves driven by a temperature that cannot rise will not spin the fans
-   up. **This is the dangerous combination**: quiet fans, a wrong temperature, and no
-   calibration to notice.
+1. **The safety net was removed.** Upstream's auto-calibration wizard, which probes
+   unknown hardware and works out a safe configuration, is deleted here — it produced
+   confidently wrong answers on this board. Nothing now catches a wrong guess.
+2. **The fans are set to run slowly.** *Silent* is the default: a 1700 rpm floor with
+   no increase until 52 °C, measured as safe on *this* chassis and cooler.
+3. **The CPU temperature may read wrong, and the fans follow it.** It comes from the
+   AMD die sensor; without one it falls back to the laptop's sensor, which on some HP
+   boards reports a number that never changes. A curve driven by a temperature that
+   cannot rise never spins the fans up.
+4. **The GPU temperature has to come from the GPU.** This laptop's own GPU sensor read
+   33 °C while the die was at 76 °C, so this build asks the NVIDIA driver instead —
+   a source that does not exist on an AMD or Intel GPU.
 
-4. **The GPU temperature has to come from the GPU.** This laptop's own GPU sensor was
-   measured against the card's die sensor under load and does not follow it — the die
-   reached 76 °C while the laptop reported 33 °C. This build therefore reads the
-   temperature from the NVIDIA driver instead. On a machine with an AMD or Intel GPU
-   there is no such source, so it falls back to the same sensor that was just shown to
-   be useless here. A 140 W GPU whose temperature the fan curve cannot see is the
-   worst case in this list.
+Quiet fans, a temperature that cannot rise, and no calibration to notice: that is the
+combination, and 3 and 4 are each sufficient on their own. CPU power limits are set
+here too (30-54 W sustained, up to 190 W peak), chosen for this processor.
 
-There is also a CPU power limit set here (45 W sustained by default, up to 54 W), chosen
-for this processor.
-
-Even on the right board this software talks directly to hardware the manufacturer did
-not document. It is provided with no warranty of any kind — see the licence. If your
-fans ever behave strangely, set the profile to **Performance** and reboot; the firmware
-takes fan control back on its own after about two minutes.
+Even on the right board this talks directly to undocumented hardware, with no warranty
+of any kind — see the licence. If the fans ever behave strangely, set the profile to
+**Performance** and reboot; the firmware takes fan control back by itself after about
+two minutes.
 
 ---
 
@@ -103,7 +99,16 @@ without a prompt every time.
 | Driver | [PawnIO](https://pawnio.eu/) — required |
 | Runtime | .NET Framework 4.8 (already present on Windows 10 1903 and later) |
 | Rights | Administrator |
+| Smart App Control | must be **off** — see below |
 | Hardware | HP OMEN 16-xf0xxx, motherboard `8BCA` — see the warning above |
+
+**Smart App Control blocks this program.** It is on by default on many new Windows 11
+machines, and it refuses to launch anything that is not signed by a certificate it
+already trusts — which no self-built or small open-source binary is. The symptom is
+*"This app has been blocked by an application control policy"* with nothing in Windows
+Security to click. Turn it off under **Settings → Privacy & security → Windows Security
+→ App & browser control → Smart App Control**. Note that Windows only lets you switch it
+*off*; turning it back on later requires resetting Windows, so decide deliberately.
 
 ### Close HP's own software
 
@@ -143,9 +148,26 @@ The number at the right (`120"`) counts down the firmware's own timer. The progr
 resetting it — that is normal, and it is why the fans revert to automatic if the program
 stops.
 
-**Power** — sets the Windows power mode and the CPU wattage together, so the two cannot
-contradict each other. **Eco** is the default. **Custom** lets you set the sustained
-wattage yourself, with the boost and peak limits derived from it.
+**Power** — the second half of the integration, and the reason a profile switch here
+does what three separate tools normally do. One click sets the Windows power overlay and
+all three CPU power limits together, so they cannot contradict each other:
+
+| Preset | Windows mode | PL1 sustained | PL2 boost | PL4 peak | Character |
+|---|---|---|---|---|---|
+| **Eco** *(default)* | Best efficiency | 30 W | 45 W | 90 W | quietest and coolest, longest battery |
+| **Balanced** | Balanced | 45 W | 65 W | 140 W | the stock 45 W TDP |
+| **Performance** | Best performance | 54 W | 80 W | 190 W | the full 54 W cTDP ceiling |
+| **Custom** | derived | 25–54 W, yours | ×1.45 | ×3 | mode follows the wattage |
+
+*Custom* takes a single number — the sustained wattage — and derives the boost and peak
+limits and the Windows mode from it, rather than letting you set four values that
+disagree. Below 35 W it selects Best efficiency, from 50 W upward Best performance.
+
+Between this panel and the fan profile above, the four things that actually determine
+how hot and how loud the machine runs — **CPU wattage, Windows power mode, GPU power cap
+and fan curve** — are set in one place and remembered together. That is the point of
+this build: OMEN Gaming Hub sets some of them, Windows sets another, a fan utility sets
+the last, and none of them tells the others.
 
 **Keyboard Backlight Colour** — pick a zone (or *All zones*), set the colour with the
 sliders, and **Save** it under a name.
@@ -167,6 +189,17 @@ about two minutes.
 the same hardware, usually OMEN Gaming Hub. Close it. The message names the program it
 was competing with, and is written to `OmenMon-error.log` next to `OmenMon.xml`.
 
+**The GPU temperature looks frozen, or too high after gaming.** It was, and it is
+fixed — the program now notices when the graphics card has powered down behind its
+back and re-reads it. If you still see it stick, the details are in finding 5 below and
+each occurrence is logged as `Nvml.Stale`.
+
+**Another monitoring tool is open (Core Temp, HWiNFO, Ryzen Master).** Close it. They
+read the same CPU sensor through the same system-wide lock, and a collision can leave
+this program without a CPU temperature. It recovers by itself, and hands the fans back
+to the firmware if it cannot — but the firmware runs the fans conservatively, so you do
+not want to be there.
+
 **Temperature or fan speed shows nothing.** Almost always PawnIO not being installed, or
 the program not running as administrator.
 
@@ -184,7 +217,7 @@ Logs are written next to `OmenMon.xml`: `OmenMon-error.log` for faults,
 *Everything below is for people working on the code, or adapting it to a different
 laptop. You do not need any of it to use the program.*
 
-## The four findings
+## The findings
 
 ### 1. Fan control was never broken
 
@@ -342,6 +375,141 @@ wrong direction to err for the part that was just shown to under-report.
 
 ---
 
+### 5. And when the GPU parks, that reading freezes — while still reporting success
+
+> **This one is not board-specific.** Everything else in these notes is about EC
+> registers on motherboard `8BCA` and stops at this laptop's edge. This finding is
+> about NVML and NVIDIA Optimus, so it should hold on **any RTX 40-series laptop with
+> hybrid graphics** — and quite possibly on 30- and 50-series too, since the mechanism
+> is the dGPU power-down, not the silicon. If you maintain a fan tool, a monitoring
+> overlay, or anything else that holds a long-lived NVML session and reads temperature
+> from it on a laptop, this affects you. The detector and the recovery are four lines
+> each and are quoted in full below.
+
+Finding 4 was only half of it. Reading the die solved the *accuracy* problem and
+created a *liveness* one, which took considerably longer to pin down because it does
+not look like a fault from the inside.
+
+This laptop is hybrid-graphics. The moment nothing needs the discrete GPU, rendering
+moves to the integrated Radeon and the RTX 4070 powers down. An NVML session that was
+open across that transition does not notice. `nvmlDeviceGetTemperature` keeps returning
+**the last value it recorded, with `NVML_SUCCESS`**, for as long as that session lives.
+Not an error, not a zero, not a stale flag — a plausible number.
+
+It was first seen as a reading stuck at 76 °C long after a load test had ended, with
+the die actually at 38 °C. That direction is merely noisy: it holds the fans up. The
+dangerous case is the same mechanism after the GPU has already cooled, where the frozen
+value is *low* and the fans stay down into the next load.
+
+Measured properly — 10 s of GPU load, then 60 s of complete silence with nothing
+touching NVML, because *any* read wakes the GPU and destroys the measurement:
+
+| cycle | NVML said | truth (`nvidia-smi`) | error | recovered within 30 s of polling? |
+|---|---|---|---|---|
+| 1 | 60 °C | 41 °C | +19 | no (150 consecutive reads) |
+| 2 | 62 °C | 44 °C | +18 | no |
+| 3 | 67 °C | 42 °C | +25 | no |
+| 4 | 69 °C | 42 °C | +27 | no |
+| 5 | — | — | — | recovered immediately |
+
+Four of five froze, and none of the four ever recovered on its own. Polling harder does
+not help and is in fact the reason an early attempt at this measurement failed
+completely: sampling once a second kept the GPU awake, the pstate never left P0, and
+the state under test never occurred. Observing it prevented it.
+
+**What does not work as a detector.** Not the temperature itself: a stale value is the
+last one seen under load, so it sits at 60–69 °C, and a GPU genuinely pinned under
+sustained load produces an identical sequence. An earlier guard here counted repeated
+identical readings and distrusted long runs below 60 °C — it could never fire, because
+the values it needed to catch were above its own threshold. Nor power (590 W of
+nonsense), nor the clock (1320 MHz against a true 1980), nor the pstate (P0 in both
+states), nor the utilisation *value* (0 % when parked and 0 % when stale).
+
+**What does work.** The *return code* of `nvmlDeviceGetUtilizationRates`. It is the one
+call that refuses to serve a cached answer: in the stale state it returns **999**
+(`NVML_ERROR_UNKNOWN`) while every other field cheerfully returns 0 with a wrong number.
+
+```
+under load : 61 °C, util 94%, 79.7 W, P0, 2430 MHz
+OLD session: 60 °C, util  0%, 590.0 W, P0, 1320 MHz   ← hr 0 / 999 / 0 / 0 / 0
+NEW session: 41 °C, util  0%,  12.3 W, P0, 1980 MHz
+nvidia-smi : 41 °C, util  0%,  12.3 W, P0, 1980 MHz
+```
+
+**The recovery is in-process.** `nvmlShutdown()` followed by `nvmlInit_v2()` restores a
+correct reading immediately — confirmed twice, exactly: 41 against a true 41, 44 against
+a true 44. No external process is involved. This also explains an earlier red herring:
+running `nvidia-smi` appeared to "fix" the reading, and it does, but only because it is
+a *fresh* session. An existing one cannot wake the GPU no matter how often it asks.
+
+In full, for anyone who wants to drop it into their own tool:
+
+```c
+// Detect: the only call that refuses to serve a cached answer.
+nvmlUtilization_t util;
+bool live = (nvmlDeviceGetUtilizationRates(dev, &util) == NVML_SUCCESS);
+//         ^ the return code, not util.gpu — a parked GPU reads 0% either way
+
+// Recover: rebuild the session, then re-acquire the handle.
+if (!live) {
+    nvmlShutdown();
+    if (nvmlInit_v2() == NVML_SUCCESS)
+        nvmlDeviceGetHandleByIndex_v2(0, &dev);
+}
+```
+
+Rate-limit the rebuild — one per 10 s here — or a permanently broken driver turns it
+into a re-init loop. And check liveness *before* trusting the temperature on that tick,
+not after: the point is never to act on the stale value at all.
+
+`Driver/Nvml.cs` therefore tests liveness on every read and rebuilds the session on the
+tick it goes stale, rate-limited to one rebuild per 10 s so a permanent fault cannot
+turn into a re-init loop. Each rebuild is written to `OmenMon-error.log`.
+
+**And if even that fails**, the fan side takes over, because falling back to `GPTM` at
+this point would be the worst possible move — it reads about 28 °C under a 79 W load, so
+taking it would look like the GPU had suddenly gone cold and would drop the GPU fan at
+the exact moment the reading was lost. Instead `Platform` holds the last die value and
+marks it untrusted, and `FanProgram` eases the GPU fan down **one step (100 rpm) per
+2 s tick to a 2500 rpm floor**, where it stays until a trustworthy reading returns. Not
+frozen loud, not dropped silent: the GPU finishes cooling on the way down, and a
+permanently dead sensor still leaves the card ventilated.
+
+---
+
+### 6. When the CPU reading dies, hand the fans back to the firmware
+
+The same class of problem on the CPU side, with a different cause and a different fix.
+
+Reading Tdie goes through the cross-process `\BaseNamedObjects\Access_PCI` mutex.
+Anything else polling the same AMD SMN register — Core Temp, HWiNFO, Ryzen Master —
+can make a read fail. That is exactly what happened here: **Core Temp was running**, and
+raising this program's poll rate from 15 s to 2 s, with each tick reading SMN twice,
+made collisions likely. There was no retry, so the first collision was permanent.
+
+The consequence was not a missing number. `GetCpuTemperature` fell through to `CPUT`
+(EC `0x57`), which is firmware *string* data — see finding 3 — plausible-looking and
+unable to rise. The curve then ran on it, and **the CPU passed 90 °C with the fans at
+their 1700 rpm floor**.
+
+Two changes. `PawnIoAmd` now retries, and reopens the module after three consecutive
+failures. And `Platform` publishes `IsCpuTemperatureTrusted`, on which `FanProgram`
+stops extending the EC countdown at `0x63` — after which the firmware resumes fan
+control by itself in about 120 s.
+
+Handing back is what other implementations do. `thinkpad-acpi` carries a fan watchdog
+the kernel documentation describes as being there "to make sure the fan is never left
+set to an unsafe level because of userspace problems", and re-enables firmware control
+on expiry. Framework's EC has `autofan` for the same reason. NBFC's porting guide tells
+config authors to find the register value that returns control to the EC firmware. The
+firmware's own curve is the one thing guaranteed safe without this software running.
+
+**Known limitation:** the firmware's curve is conservative, and in testing "auto" let
+the CPU reach 94 °C under sustained all-core load. Handing back is the safe *failure*
+mode, not a good operating mode — the real fix is not to lose the reading, which is why
+the retry above matters more than the hand-back does.
+
+---
 ## Other things learned about this board
 
 - **Fan programs apply as step functions, not interpolated ramps.**
@@ -350,19 +518,27 @@ wrong direction to err for the part that was just shown to under-report.
   want the steps.
 - **Fan levels are in units of 100 RPM.** Level 18 is 1800 RPM. The practical floor on
   this chassis is around 1700; below that the fans stall rather than spin slowly.
-- **Fan curves work off `max(CPU, GPU)`.** Which is why finding 4 matters: with both
-  terms wrong, the curve had nothing real to key on at all.
-- **The EC lock is usually contended by OmenMon itself**, not by another application.
-  `Global\Access_EC` is held for a whole `EcExecBatch` sensor pass, and `Ec.cs`'s read
-  backoff `Wait()`s while holding it, so a single 600 ms attempt from the UI thread
-  loses. Acquisition now retries across a budget (`EcMutexTotalTimeout`, default
-  2500 ms). The error log names the competing process — on the first timeout observed
-  here, there was none.
-- **Fan programs have no hysteresis, and re-evaluate every 15 s.**
-  `GetTemperatureLevel()` is a bare binary search with no dead band, so a temperature
-  resting on a threshold flips the fan between two levels every tick. This is the
-  second reason curves need dense points: at 14 °C spacing that is a ~1000 rpm pump
-  every 15 seconds, at 2 °C spacing it is 200 rpm and inaudible.
+- **Each fan now follows its own component, not `max(CPU, GPU)`.** Upstream picks one
+  level from the higher of the two temperatures and applies it to both fans. This fork
+  looks the level up twice and gives the CPU fan the CPU's row and the GPU fan the
+  GPU's. Verified independently in both directions: GPU at 68 °C drove the GPU fan to
+  3800 rpm while the CPU fan stayed at 2000; CPU at 66 °C drove the CPU fan to 3700
+  while the GPU fan stayed at 2500.
+- **The EC lock contender is often something you did not think of, and the log used to
+  hide it.** `Global\Access_EC` is held for a whole `EcExecBatch` sensor pass, and
+  `Ec.cs`'s read backoff `Wait()`s while holding it, so a single 600 ms attempt from
+  the UI thread loses. Acquisition now retries across a budget (`EcMutexTotalTimeout`,
+  default 2500 ms). **Correction to an earlier version of this note:** it said the lock
+  was "usually contended by OmenMon itself" and that no competing process was found.
+  That was a reporting bug, not a measurement — `EcContenderNames` matched process
+  names exactly, so `OmenCap` and `HPSystemEventUtilityBackground` were running the
+  whole time and reported as "none detected". Matching is now by substring.
+- **Fan programs have no hysteresis**, and re-evaluate every `UpdateProgramInterval`
+  seconds — **2 s** here, down from the 15 s default, which was far too slow to catch a
+  rise. `GetTemperatureLevel()` is a bare binary search with no dead band, so a
+  temperature resting on a threshold flips the fan between two levels every tick. This
+  is the second reason curves need dense points: at 14 °C spacing that is a ~1000 rpm
+  pump every couple of seconds, at 2 °C spacing it is 200 rpm and inaudible.
 - **Each profile sets `<GpuPower>`, and Silent sets `Minimum`** — 80 W against the
   card's 140 W maximum, confirmed by `power.default_limit` vs `enforced.power.limit`.
   Switching profile changes the GPU power budget as well as the fans. It also means
@@ -394,6 +570,8 @@ wrong direction to err for the part that was just shown to under-report.
 |---|---|
 | **CPU temperature** | AMD Tctl/Tdie over SMN via a second PawnIO module, median-of-3 smoothed (`Driver/PawnIoAmd.cs`) |
 | **GPU temperature** | NVIDIA die temperature via `nvml.dll` — no kernel driver, no elevation. Unsmoothed, so a rise is never delayed (`Driver/Nvml.cs`) |
+| **GPU sensor liveness** | Every read tests the NVML session with `nvmlDeviceGetUtilizationRates` and rebuilds it when it has gone stale, so a parked GPU can no longer freeze the reading at a wrong value (finding 5) |
+| **Untrusted-sensor fallbacks** | CPU: fans handed back to the firmware. GPU: the last die value is held rather than falling through to the useless EC sensor, and the fan eases to a 2500 rpm floor instead of dropping (`Hardware/FanProgram.cs`) |
 | **Fan RPM** | `BiosLevelMirror` ×100 mapping for `8BCA` (`Library/AutoCal.cs`) |
 | **Fan profiles** | Reduced to Performance / Default / Silent, with `+` to add. The three standard ones cannot be deleted. Selecting one applies immediately — no second click, no hysteresis wait |
 | **Fan curve** | Inline editable: left-click adds a point, right-click removes one, drag to move (`App/Gui/GuiCurveEditor.cs`) |

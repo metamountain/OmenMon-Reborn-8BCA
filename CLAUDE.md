@@ -123,24 +123,41 @@ wrong.
 per-sensor `Use` flag (it previously did not, so a disabled sensor still fed
 `CpuTemp`).
 
-### The EC lock is usually contended by OmenMon itself
+### The EC lock contender is real, and the log used to hide it
 
-The first user-visible timeout logged `other EC users: none detected`. The monitor
-thread holds `Global\Access_EC` for a whole `EcExecBatch` pass, and `Hardware/Ec.cs`'s
-read backoff `Wait()`s while holding it. `Hw.EcRequest()` now retries across
-`EcMutexTotalTimeout` (2500 ms) instead of making a single `EcMutexTimeout` attempt.
+**Corrects an earlier note here**, which read "the EC lock is usually contended by
+OmenMon itself" on the strength of a timeout that logged `other EC users: none
+detected`. That was a reporting bug: `EcContenderNames` matched process names
+*exactly*, and `OmenCap` and `HPSystemEventUtilityBackground` were running throughout.
+Matching is now by substring, and the log names them.
 
-### Fan programs have no hysteresis, and tick every 15 s
+The self-contention is real too and still worth knowing: the monitor thread holds
+`Global\Access_EC` for a whole `EcExecBatch` pass, and `Hardware/Ec.cs`'s read backoff
+`Wait()`s while holding it. `Hw.EcRequest()` now retries across `EcMutexTotalTimeout`
+(2500 ms) instead of making a single `EcMutexTimeout` attempt.
+
+### The CPU die read has its own contender: any other monitoring tool
+
+`PawnIoAmd` reads `THM_TCON_CUR_TMP` through the cross-process
+`\BaseNamedObjects\Access_PCI` mutex. Core Temp, HWiNFO and Ryzen Master poll the same
+register through the same mutex. Root cause of a session where the die reading died and
+the curve silently fell back to `CPUT`: **Core Temp was running**, and the tick rate had
+gone from 15 s to 2 s with two SMN reads per tick, making collisions likely. There was
+no retry, so the first collision was permanent. `PawnIoAmd` now retries and reopens the
+module after three consecutive failures (30 s cooldown). Close other monitors before
+drawing conclusions from a die-read failure.
+
+### Fan programs have no hysteresis, and tick every `UpdateProgramInterval` seconds
 
 `FanProgram.GetTemperatureLevel()` is a plain binary search over the threshold list.
 There is no dead band. A temperature sitting on a threshold therefore flips the fan
-between two levels every `UpdateProgramInterval` (15 s by default).
+between two levels every tick — **2 s** in this config, down from the 15 s default,
+which was far too slow to catch a rise.
 
 This is the second reason curves need dense points, and the less obvious one. With
-14 C gaps between rows the oscillation is a ~1000 rpm pump every 15 seconds; at 2 C
-spacing it is 200 rpm and inaudible. Densifying is not only about smooth response - it
-is what makes the missing hysteresis stop mattering.
-
+14 C gaps between rows the oscillation is a ~1000 rpm pump; at 2 C spacing it is 200 rpm
+and inaudible. Densifying is not only about smooth response - it is what makes the
+missing hysteresis stop mattering.
 ### Silent caps the GPU at 80 W
 
 Each fan program carries a `<GpuPower>` element. Silent and "My profile" set `Minimum`,
@@ -213,6 +230,8 @@ that support them are still online and still persuasive.
 | CPU temperature was fixed by disabling `CPUT` | 6 idle samples reading 44-45 against a die of 41 | Burn-in disproved it: 44 °C reported while the die was at 66.8, and 33 while the die was at 48.5. **Idle agreement is not agreement.** |
 | `GPTM` (EC `0xB7`) is a valid GPU sensor | It moved a little, the idle value looked right, and the fan curves appeared to work | A 79 W GPU load: die 34 → 76 °C, `GPTM` 26 → 33 °C, gap widening from 25 to 42 °C. Same trap as the row above, found only because the user asked whether the GPU had ever been checked. It had not. |
 
+## Traps that cost real time
+
 ### The fan curves read Platform, not the GUI snapshot
 
 `FanProgram.Update()` calls `Platform.GetCpuTemperature()` and
@@ -227,7 +246,7 @@ Both overrides now live in the `Platform` accessors, and are folded into
 `GetMaxTemperature()`. `GuiMonitor` reads the same accessors, so display and fans cannot
 diverge again. **Any new sensor source belongs in `Platform`, not in the monitor.**
 
-### NVML goes stale when the dGPU powers down
+### NVML goes stale when the dGPU powers down — detect it, then rebuild the session
 
 Hybrid graphics: when nothing needs the discrete GPU, rendering moves to the AMD
 integrated one and the dGPU powers off. NVML then keeps returning the last temperature
@@ -237,24 +256,87 @@ peak of a load test that had ended minutes earlier) while the die was at 38 C. R
 is what made this hard to pin down - every attempt to measure it destroyed the state
 being measured.
 
-`Nvml.TryGetGpuTemperature()` rejects a value repeated 120 times running, *unless* it is
-at or above 60 C. That exception is the point: a GPU genuinely pinned at a constant
-temperature under sustained load must never have its reading discarded, because that
-would drop the fans exactly when they are needed. Below 60 C a stale value can only be
-the last one before sleep, so discarding it costs nothing. The guard can only reject,
-never invent, and rejection falls back to prior behaviour.
+Measured properly (10 s load, 60 s of total NVML silence, one read, then `nvidia-smi`
+last as ground truth): **4 of 5 cycles froze**, errors +18 to +27 C, and **none of the
+four recovered** across 30 s of continuous polling (150 reads).
 
-Not yet verified under a GPU-only load. That is the next test.
+**The detector is the return code of `nvmlDeviceGetUtilizationRates`, which is 999
+(`NVML_ERROR_UNKNOWN`) in the stale state.** Nothing else reports the condition:
+
+| field | stale session | truth | `hr` |
+|---|---|---|---|
+| temperature | 60 C | 41 C | **0** |
+| utilisation | 0 % | 0 % | **999** |
+| power | 590 W | 12.3 W | 0 |
+| pstate | P0 | P0 | 0 |
+| SM clock | 1320 MHz | 1980 MHz | 0 |
+
+Note it is the *return code*, not the utilisation value: a parked GPU and a stale
+session both read 0 %.
+
+**The recovery is `nvmlShutdown()` + `nvmlInit_v2()` in-process.** Confirmed twice,
+immediately and exactly (41 vs 41, 44 vs 44). No external process is needed. An existing
+session cannot wake the GPU however hard it polls, which is why `nvidia-smi` appeared to
+"fix" it — a *fresh* session is the whole mechanism.
+
+`Nvml` does both on every read, rate-limited to one rebuild per 10 s
+(`ReinitCooldownSec`) so a permanent fault cannot become a re-init loop. Rebuilds are
+logged as `Nvml.Stale`.
+
+**Corrects an earlier note here.** The previous guard rejected a value repeated 120
+times running unless it was at or above 60 C. It could never fire: the stale values
+*are* the last ones seen under load, i.e. 60-69 C, above its own exception. The premise
+was also wrong — a frozen reading is not detectable from the temperature at all, since a
+genuinely pinned GPU produces an identical sequence. Do not reintroduce a repeat-count
+heuristic here.
+
+### Untrusted-sensor fallbacks differ by component, deliberately
+
+Both sensors can stop being trustworthy, and the right response is opposite in each case.
+
+**CPU — hand the fans back to the firmware.** `Platform.IsCpuTemperatureTrusted` is
+false when the die read fails and `GetCpuTemperature` would otherwise fall through to
+`CPUT` (EC `0x57`), which is *string data* and cannot rise. After
+`UntrustedTicksBeforeHandback` (5) ticks `FanProgram` stops calling `UpdateCountdown()`;
+the EC watchdog at `0x63` then expires and the BIOS resumes fan control in ~120 s.
+Precedent: `thinkpad-acpi`'s fan watchdog, Framework's `autofan`, NBFC's porting guide.
+**But note the cost**: the firmware curve let the CPU reach 94 C under sustained
+all-core load in testing. This is a safe failure mode, not a good operating mode — the
+retry in `PawnIoAmd` matters more than the hand-back does.
+
+**GPU — hold the value and ease the fan down.** Handing back is wrong here, and so is
+falling through to `GPTM`, which reads ~28 C under a 79 W load: taking it would look
+like the GPU had gone cold and would drop the GPU fan at the exact moment the reading
+was lost. Instead `Platform` keeps `LastGpuTemperature` and clears
+`IsGpuTemperatureTrusted`; `FanProgram` then eases the GPU fan down `GpuUntrustedRampStep`
+(1 level = 100 rpm) per tick to `GpuUntrustedFloor` (25 = 2500 rpm) and holds there. At
+the 2 s tick that is ~40 s from a 4500 rpm peak: the GPU finishes cooling on the way
+down, and a permanently dead sensor still leaves the card ventilated. `nvmlWasSource`
+latches on the first good NVML read so a machine that never had a die sensor keeps the
+old GPTM behaviour.
 
 ## Still open
 
+- **The BIOS countdown watchdog lapses under sustained full CPU load.** Observed twice:
+  the countdown at `0x63` expired, the firmware took the fans at 78 C, and the CPU then
+  reached 94 C. Raising `FanCountdownExtendThreshold` from 5 to 60 and setting the
+  monitor thread to `AboveNormal` did **not** prevent the second lapse. This is the most
+  important open item — it is a safety path that is known to fail.
 - **Monitor thread starves under sustained full load** — 2 telemetry samples in 15
-  minutes observed. This also thins `CheckThermalPanic`, which is a safety path.
-  Raising the thread priority is the obvious first move; not yet done.
+  minutes observed. Thread priority is now `AboveNormal` and `TelemetryEvery` is 8
+  (was 30), which helped but did not fix the item above. Also thins `CheckThermalPanic`.
+- **No independent CPU cross-check is available.** `MSAcpi_ThermalZoneTemperature` is
+  access-denied unelevated, and running Core Temp breaks this program's own SMN read
+  (see the contention note above). Verification currently depends on one source.
+- **`FanLevelMax` is 55 in the config while every profile tops out at 57-58.**
+  Unreconciled; find out which one is authoritative before changing either.
 - **Config save occasionally fails.** The user saw "failed to save configuration data"
   while the change survived in memory. `Config.Save()` now logs the exception to
   `OmenMon-error.log` and writes via a temp file + `File.Replace`, so the next
   occurrence will name its own cause. Root cause still unknown.
+- **The GPU untrusted ramp has not been exercised in the field.** It only runs when the
+  NVML session goes stale *and* the rebuild fails, which the rebuild makes rare by
+  design. Worth forcing once to confirm the ramp behaves.
 - **Tray icon no longer signals hot/cold**, because that signal *was* the colour. If
   it should come back monochrome, invert above the threshold: white diamond, black
   digits.
@@ -282,6 +364,17 @@ Not yet verified under a GPU-only load. That is the next test.
   failed under load.
 - Deploy with `C:\Users\omen\omen-deploy.cmd` (self-elevating). The running app is
   elevated, so an unelevated session cannot overwrite the exe.
+- **Build with `make build`, and do not trust a bare `msbuild` on PATH.** This machine's
+  Build Tools live under *Program Files (x86)*; `make.cmd` used to search only
+  `%ProgramFiles%` and fell through to the .NET Framework MSBuild in
+  `C:\Windows\Microsoft.NET\Framework64`, which cannot compile `langversion 11` and
+  fails with a bewildering `CS1617`. `make.cmd` now asks `vswhere` first. The dotnet
+  SDK's MSBuild is no substitute either — it cannot resolve the
+  `Microsoft.Management.Infrastructure` GAC reference that `Hardware/Bios.cs` needs.
+- **`Tests/OmenMon.Tests` is SDK-style and needs its own restore.** After a clean
+  checkout `make build` stops at `NETSDK1004` until
+  `dotnet restore Tests\OmenMon.Tests\OmenMon.Tests.csproj` has run once. 93 tests,
+  `dotnet test Tests\OmenMon.Tests\OmenMon.Tests.csproj -c Release --no-build`.
 
 ## Useful commands
 
