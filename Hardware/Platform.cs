@@ -1,0 +1,707 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+// OmenMon-Reborn additions © 2026 seakyy
+
+using System;
+using OmenMon.Hardware.Bios;
+using OmenMon.Hardware.Ec;
+using OmenMon.Library;
+
+namespace OmenMon.Hardware.Platform {
+
+    // Manages the hardware sensors
+    public class Platform {
+
+#region Data
+        // Last maximum temperature reading
+        public byte LastMaxTemperature { get; private set; }
+
+        // Last per-component temperature readings (populated by GetCpu/GpuTemperature)
+        public byte LastCpuTemperature { get; private set; }
+        public byte LastGpuTemperature { get; private set; }
+
+        // Sticky observed-GPU-temperature flag. Flipped to true the first time
+        // GetGpuTemperature() sees a non-zero GPTM reading; never cleared for
+        // the lifetime of the platform instance. Used by HasObservedGpuTemperature()
+        // to distinguish "this board has a real GPU temp sensor that's currently
+        // reading 0 because the discrete GPU is powered off" (do not fall back to
+        // CPU temp) from "this board has no real GPU temp sensor at all and GPTM
+        // is just the default global config entry reading 0 forever" (fall back).
+        // See Copilot review #1 on PR #62 / issue #66.
+        //
+        // Marked volatile (B2): the flag is written from GetGpuTemperature() (GUI tick /
+        // fan-program tick) and read from HasObservedGpuTemperature() (FanProgram on a
+        // background path), so an unsynchronised plain bool could in principle have its
+        // first-non-zero transition seen late on a weak memory model. volatile gives the
+        // sticky latch a defined publish/acquire without the cost of a lock.
+        private volatile bool gpuTempObserved = false;
+
+        // System information
+        public ISettings System { get; private set; }
+
+        // Fan sensors and controls
+        public IFanArray Fans { get; private set; }
+
+        // Temperature sensor array and which of these values are used
+        public IPlatformReadComponent[] Temperature { get; private set; }
+        public bool[] TemperatureUse { get; private set; }
+
+        // Resolved per-model register layout. Set once in the ctor (after InitSystem)
+        // and shared by InitFans / InitTemperature. Falls back to PlatformPreset.Default
+        // for fan-related fields when the product isn't in the model database; for the
+        // optional override fields (TempCpuReg/Gpu, ManualValueOn/Off) the preset's own
+        // defaults already encode "no override".
+        private PlatformPreset Preset;
+#endregion
+
+#region Initialization
+        // Initializes the class
+        public Platform() {
+
+            // Initialize the system settings — must run first so GetProduct() is available.
+            InitSystem();
+
+            // Resolve the model preset once and reuse for both fans and temperature.
+            string product = this.System.GetProduct();
+            this.Preset = Config.Models.ContainsKey(product)
+                ? Config.Models[product]
+                : PlatformPreset.Default;
+
+            // Initialize the fan controls
+            InitFans();
+
+            // Initialize the temperature controls
+            InitTemperature();
+
+        }
+
+        // Initializes the fan controls
+        private void InitFans() {
+
+            // Use the preset resolved in the ctor.
+            string product = this.System.GetProduct();
+            PlatformPreset preset = this.Preset;
+
+            // Restore overrides from a previous wizard run, then fall back to a known-good
+            // built-in mapping for boards where the legacy tachometer offsets are unreliable
+            // (e.g. 8BD4 repurposes 0xB0/0xB2 as temperature sensors). Load() is keyed by
+            // ProductId so a sidecar from a different machine is rejected; Prime() fills
+            // in any fan the sidecar did not cover. User-run calibrations always outrank
+            // built-in defaults on a per-fan basis.
+            AutoCal.Load(product);
+            AutoCal.Prime(product);
+
+            this.Fans = new FanArray(
+                new IFan[] {
+
+                    // CPU fan
+                    new Fan(
+                        BiosData.FanType.Cpu,
+                        new EcComponent(preset.FanLevelReg0,
+                            PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+                        new EcComponent(preset.FanRateReadReg0,
+                            PlatformData.AccessType.Read),
+                        new EcComponent(preset.FanRateWriteReg0,
+                            PlatformData.AccessType.Write),
+                        new EcComponent(preset.FanSpeedReg0,
+                            PlatformData.AccessType.Read,
+                            PlatformData.DataSize.Word)),
+
+                    // GPU fan (RPM3 not RPM2 is intentional — RPM2 is the CPU high byte)
+                    new Fan(
+                        BiosData.FanType.Gpu,
+                        new EcComponent(preset.FanLevelReg1,
+                            PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+                        new EcComponent(preset.FanRateReadReg1,
+                            PlatformData.AccessType.Read),
+                        new EcComponent(preset.FanRateWriteReg1,
+                            PlatformData.AccessType.Write),
+                        new EcComponent(preset.FanSpeedReg1,
+                            PlatformData.AccessType.Read,
+                            PlatformData.DataSize.Word)) },
+
+                new EcComponent(preset.CountdownReg,
+                    PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+
+                new EcComponent(preset.ManualReg,
+                    PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+
+                new EcComponent(preset.ModeReg,
+                    PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+
+                new EcComponent(preset.SwitchReg,
+                    PlatformData.AccessType.Read | PlatformData.AccessType.Write),
+
+                preset.ManualValueOn,
+                preset.ManualValueOff);
+
+        }
+
+        // Initializes the system settings
+        private void InitSystem() {
+            this.System = new Settings();
+        }
+
+        // Initializes the temperature controls
+        private void InitTemperature() {
+
+            // Per-model temperature-register overrides come from the preset resolved in
+            // the ctor. 2024+ boards that moved CPU/GPU temp sensors to non-legacy EC
+            // offsets (e.g. 8C9C: CPU at EC[0xB0], GPU at EC[0xB4]) declare TempCpuReg /
+            // TempGpuReg there; for everyone else the values are 0 and we fall through
+            // to the global <Temperature> config.
+            PlatformPreset preset = this.Preset;
+
+            // Set up the temperature sensor array based on the configuration data
+            this.Temperature = new IPlatformReadComponent[Config.TemperatureSensor.Count];
+            this.TemperatureUse = new bool[Config.TemperatureSensor.Count];
+
+            // Populate the temperature sensor array
+            int i = 0;
+            foreach(string name in Config.TemperatureSensor.Keys) {
+
+                // Set whether the sensor can be used for maximum temperature
+                this.TemperatureUse[i] = Config.TemperatureSensor[name].Use;
+
+                // Process each sensor loaded from the configuration
+                switch(Config.TemperatureSensor[name].Source) {
+
+                    // Add an Embedded Controller sensor. When the model preset declares
+                    // a TempCpuReg / TempGpuReg override, remap the named CPUT / GPTM
+                    // sensors to that address but keep the original sensor name so the
+                    // GUI / tray tooltip lookups (which match on "CPUT" / "GPTM") still
+                    // pick them up. Braces around the case body keep the local variables
+                    // out of the switch's outer scope.
+                    case PlatformData.LinkType.EmbeddedController: {
+                        byte register = Config.TemperatureSensor[name].Register;
+                        bool overridden = false;
+                        if(name == "CPUT" && preset.TempCpuReg != 0) {
+                            register = preset.TempCpuReg;
+                            overridden = true;
+                        } else if(name == "GPTM" && preset.TempGpuReg != 0) {
+                            register = preset.TempGpuReg;
+                            overridden = true;
+                        }
+                        EcComponent comp = new EcComponent(
+                            register,
+                            Config.MaxBelievableTemperature);
+                        if(overridden)
+                            comp.SetName(name); // preserve "CPUT" / "GPTM" instead of the
+                                                // auto-derived enum name (e.g. "RPM1")
+                        this.Temperature[i++] = comp;
+                        break;
+                    }
+
+                    // Add a WMI BIOS sensor
+                    case PlatformData.LinkType.WmiBios:
+                        this.Temperature[i++] =
+                            new WmiBiosTemperatureComponent(Config.MaxBelievableTemperature);
+                        break;
+
+                }
+
+            }
+
+        }
+#endregion
+
+#region Information Retrieval
+        // Two stages over the raw AMD die reading: reject a fail-read, then smooth what
+        // survives. The order is the whole point — smoothing a fail-read does not remove
+        // it, it spreads it across the next several seconds of fan behaviour.
+        //
+        // What this replaced, and why: a median over the last three *ticks*. Those ticks
+        // are seconds apart, so the window covered real thermal history rather than one
+        // moment, and such a median can only tell "changed" from "did not change" — never
+        // "changed" from "misread". It rejected genuine fast rises as readily as glitches,
+        // which is why it needed a max(now, median) asymmetry bolted on to stay safe, and
+        // a sustained run of bad samples dragged the median down with it regardless.
+        //
+        // Stage 1 separates the two on the axis that actually distinguishes them: time.
+        // A fail-read is a momentary glitch in one SMN transaction, so a second read
+        // ~80 ms later disagrees with it. A real temperature reads the same 80 ms later,
+        // because the die cannot move meaningfully in that window. Reading three times
+        // and taking the middle therefore drops the glitch and keeps the transient —
+        // which no filter sampling seconds apart can do, however it is weighted.
+        //
+        // The extra reads are taken only when a sample is surprising, so the steady case
+        // still costs exactly one SMN transaction per refresh. That matters: the mutex is
+        // shared cross-process with Core Temp, and tripling traffic unconditionally would
+        // buy noise immunity by causing the very contention that produces the failures.
+        private const int SurpriseDeltaC = 8;      // jump that triggers confirmation
+        private const int ConfirmReads = 2;        // extra reads taken when it does
+        private const int ConfirmSpacingMs = 80;   // long enough to decorrelate, short
+                                                   // enough that the die has not moved
+
+        // Stage 2, exponential and asymmetric. Same reasoning as FanProgram.EaseDown:
+        // being late upward costs degrees, being late downward costs a few seconds of
+        // noise — so heat is followed quickly and cooling slowly. Falling at 0.20 per
+        // sample is roughly a 15 s time constant at the current tick, which is the
+        // "natural cooling" shape rather than a step.
+        private const double AlphaRise = 0.55;
+        private const double AlphaFall = 0.20;
+
+        private int dieAcceptedRaw;        // newest reading that survived stage 1
+        private bool dieAcceptedValid;
+        private double dieSmoothed;        // stage 2 output
+        private bool dieSmoothedValid;
+
+        // The CPU's own Tctl/Tdie over the SMN, median-of-3 smoothed.
+        //
+        // Smoothed because Zen boosts on any brief foreground task, so the raw reading
+        // spikes ~30 °C for a single sample at idle; the EC value it replaces was
+        // smoothed in firmware, and feeding the unsmoothed die to the fan programs would
+        // have them chase transients. Three samples drops a lone spike while still
+        // reacting within a few seconds of real load.
+        //
+        // The GPU deliberately gets no equivalent smoothing — see GetGpuTemperature().
+        // Whether the last CPU temperature came from the die, or from a fallback.
+        //
+        // Callers that act on the temperature need to know this. On this board the
+        // fallbacks are not merely less precise, they are wrong: CPUT is firmware string
+        // data that cannot rise, so a fan curve fed by it holds the fans at idle through
+        // a 90 °C load. A consumer must be able to tell "I have a real reading" from
+        // "I have a number".
+        public bool IsCpuTemperatureTrusted { get; private set; }
+
+        // The same question for the GPU, and it has the same answer for the same reason:
+        // GPTM cannot rise, so a curve fed by it is a curve fed by nothing. False when
+        // the die sensor has worked before but is not answering now.
+        public bool IsGpuTemperatureTrusted { get; private set; }
+
+        // Latched once NVML has produced one good reading. Distinguishes "the die sensor
+        // is broken right now" from "this machine never had one", which need opposite
+        // fallbacks — see GetGpuTemperature().
+        private bool nvmlWasSource;
+
+        // Consecutive ticks the die sensor has not answered on
+        private int gpuFailTicks;
+
+        // How long that has to go on before the reading counts as lost. Nvml rebuilds a
+        // cold stale session once every 60 s, so at the 2 s tick a healthy idle machine
+        // never exceeds ~30 consecutive failures. 60 gives that comfortable margin and
+        // still reacts inside two minutes to a sensor that is genuinely gone.
+        private const int GpuUntrustedGraceTicks = 60;
+
+        // Last die reading and when it was taken, so one tick costs one SMN read
+        private byte dieCached;
+        private bool dieCachedOk;
+        private DateTime dieCachedAt = DateTime.MinValue;
+
+        // How long a die reading stays good for. Shorter than the fan program tick, so
+        // the value is never stale in a way that matters, long enough that the several
+        // callers within one tick share a single read.
+        // 400 ms, not 900.
+        //
+        // The cache exists so that one monitor pass does not take the cross-process
+        // Access_PCI mutex four times — GetCpuTemperature() and GetMaxTemperature() both
+        // read, and the GUI calls both. That reason still holds at 400 ms: the calls
+        // within a single pass are milliseconds apart.
+        //
+        // 900 ms was chosen when the fan curve ran on the 2 s monitor tick, so a stale
+        // reading cost nothing. The curve now has its own thread at 1 s, and a 900 ms
+        // cache would hand it the same value twice — halving the tick rate it was moved
+        // onto that thread to get.
+        private const int DieCacheMs = 400;
+
+        private bool TryGetCpuDieTemperature(out byte celsius) {
+
+            // Serve the tick's other callers from the cache. GetCpuTemperature() and
+            // GetMaxTemperature() each used to read the SMN independently, and the GUI
+            // monitor calls both, so a single pass took the cross-process Access_PCI
+            // mutex four times over. Tripling the program tick rate (15 s -> 2 s)
+            // multiplied that again, right before the reader started failing.
+            if(dieCachedAt != DateTime.MinValue
+                && (DateTime.UtcNow - dieCachedAt).TotalMilliseconds < DieCacheMs) {
+                celsius = dieCached;
+                return dieCachedOk;
+            }
+
+            celsius = 0;
+
+            int now;
+            if(!TryReadDieOnce(out now)) {
+                dieCachedAt = DateTime.UtcNow;
+                dieCachedOk = false;
+                return false;
+            }
+
+            // ---- stage 1: is this reading real? ----------------------------
+            //
+            // Only a surprising sample is questioned. "Surprising" is deliberately
+            // generous: a real transient that clears the threshold is confirmed by the
+            // extra reads and passes through within ~160 ms, so setting it low costs
+            // latency on real events, never correctness.
+            //
+            // Two survivors take the hotter of the two rather than their mean. With one
+            // read lost to contention there is no majority, and the failure that matters
+            // is the one that leaves the fans too slow.
+            if(dieAcceptedValid && Math.Abs(now - dieAcceptedRaw) > SurpriseDeltaC) {
+                int[] s = new int[1 + ConfirmReads];
+                s[0] = now;
+                int got = 1;
+                for(int i = 0; i < ConfirmReads; i++) {
+                    // The mutex is taken and released inside each read, so this pause
+                    // does not hold it against Core Temp or anything else.
+                    global::System.Threading.Thread.Sleep(ConfirmSpacingMs);
+                    int v;
+                    if(TryReadDieOnce(out v))
+                        s[got++] = v;
+                }
+                if(got == 3)
+                    now = Median3(s[0], s[1], s[2]);
+                else if(got == 2)
+                    now = Math.Max(s[0], s[1]);
+                else if(now < dieAcceptedRaw)
+                    // No confirmation available at all — both extra reads failed, which
+                    // is itself a symptom of the contention that produces bad samples.
+                    // An unconfirmed jump downward is therefore refused: accepting it is
+                    // how a single bad read talks the fans down off a hot CPU. Upward
+                    // jumps are still taken unconfirmed, because the cost of being wrong
+                    // runs the other way.
+                    now = dieAcceptedRaw;
+            }
+
+            dieAcceptedRaw = now;
+            dieAcceptedValid = true;
+
+            // ---- stage 2: smooth what survived ------------------------------
+            if(!dieSmoothedValid) {
+                dieSmoothed = now;
+                dieSmoothedValid = true;
+            } else {
+                dieSmoothed += (now > dieSmoothed ? AlphaRise : AlphaFall)
+                    * (now - dieSmoothed);
+            }
+
+            celsius = (byte) Math.Round(dieSmoothed);
+
+            dieCached = celsius;
+            dieCachedOk = true;
+            dieCachedAt = DateTime.UtcNow;
+            return true;
+
+        }
+
+        // One raw SMN read, with the sanity gate that has always guarded this value.
+        // No filtering of any kind — both stages above are built out of this.
+        private static bool TryReadDieOnce(out int celsius) {
+            celsius = 0;
+            double die;
+            if(!OmenMon.Driver.PawnIoAmd.TryGetCpuTemperature(out die)
+                || die <= 0.0 || die >= Config.MaxBelievableTemperature)
+                return false;
+            celsius = (int) Math.Round(die);
+            return true;
+        }
+
+        // The highest reading that passed fail-read rejection, before smoothing.
+        //
+        // Peak tracking has to use this rather than the smoothed value, or the record
+        // becomes a record of the filter: stage 2 approaches a brief spike without ever
+        // reaching it, so a genuine 98 °C touch would be remembered as somewhere in the
+        // eighties. Stage 1 has already removed the readings that were never real, which
+        // is the only reason reporting a raw peak is safe.
+        public int LastAcceptedCpuDie { get { return dieAcceptedRaw; } }
+
+        // Middle of three values, without sorting
+        private static int Median3(int a, int b, int c) {
+            if(a > b) { int t = a; a = b; b = t; }
+            if(b > c) { int t = b; b = c; c = t; }
+            return a > b ? a : b;
+        }
+
+        // Obtains the maximum value from the platform temperature array
+        public byte GetMaxTemperature(bool forceUpdate = false) {
+
+            // Update the platform temperature readings first
+            // if forced to do so
+            if(forceUpdate)
+                UpdateTemperature(true);
+
+            // Reset the state
+            this.LastMaxTemperature = 0;
+            byte value;
+
+            // Iterate through the platform temperature array
+            for(int i = 0; i < this.Temperature.Length; i++)
+
+                // Obtain the reading from each temperature sensor
+                // If the value is higher than the current candidate
+                if(this.TemperatureUse[i] // Ignore certain sensors
+                    && (value = (byte) this.Temperature[i].GetValue())
+                        > this.LastMaxTemperature)
+
+                    // Update the candidate
+                    this.LastMaxTemperature = value;
+
+            // The loop above only sees the EC and WMI sensors. On this board both of the
+            // ones that matter are wrong — CPUT is firmware string data and GPTM does not
+            // track the GPU — so the die readings have to be folded in by hand, or the
+            // thermal-panic check and the tray icon would run on the same bad numbers the
+            // fan curves used to.
+            // Take the peak from the accepted raw reading, not the smoothed one — see
+            // LastAcceptedCpuDie. The call is still what refreshes both.
+            byte die;
+            if(TryGetCpuDieTemperature(out die)) {
+                int peak = this.LastAcceptedCpuDie;
+                if(peak > this.LastMaxTemperature && peak <= byte.MaxValue)
+                    this.LastMaxTemperature = (byte) peak;
+            }
+
+            int gpuDie;
+            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie)
+                && gpuDie > 0 && gpuDie < Config.MaxBelievableTemperature
+                && gpuDie > this.LastMaxTemperature)
+                this.LastMaxTemperature = (byte) gpuDie;
+
+            // Return the result
+            return this.LastMaxTemperature;
+
+        }
+
+        // Obtains the CPU temperature as the higher of the CPUT sensor and the
+        // WMI BIOS sensor. Taking the maximum (instead of trusting CPUT whenever
+        // it is non-zero) covers both known CPUT failure shapes with one policy:
+        //   * CPUT reads 0xFF (filtered by MaxBelievableTemperature → 0) because
+        //     EC 0x57 overlaps firmware data — 8C9C, 8BBE and similar 2023+
+        //     boards; the BIOS sensor is the only valid proxy there.
+        //   * CPUT is stuck on a constant non-zero byte of firmware string data —
+        //     8D87 reads a permanent 52 (ASCII '4'), so the old "CPUT wins if
+        //     non-zero" rule kept fan programs pinned to the 52 °C curve row
+        //     while the die overheated (issue #97). With max(), the BIOS sensor
+        //     takes over as soon as the real temperature exceeds the stuck byte.
+        // Erring towards the higher reading only ever speeds fans up, never
+        // starves cooling, so a disagreeing sensor pair degrades safely.
+        public byte GetCpuTemperature(bool forceUpdate = false) {
+
+            if(forceUpdate)
+                UpdateTemperature(false);
+
+            byte cpu = 0, bios = 0;
+            for(int i = 0; i < this.Temperature.Length; i++) {
+
+                // Honour the per-sensor Use flag from OmenMon.xml. Without this, a sensor
+                // switched off in the configuration still fed the fan curves.
+                //
+                // On this board that was not a cosmetic bug. CPUT is Use="false" because
+                // EC 0x57 holds firmware string data, not a temperature — its values are
+                // ASCII punctuation (0x22 -> "34", 0x26 -> "38", 0x29 -> "41") which look
+                // like a plausible idle CPU and never rise. When the die reading below is
+                // unavailable, this loop silently substituted that garbage: measured, the
+                // CPU sat above 90 °C on Core Temp while OmenMon reported 34 and held the
+                // fans at their 1700 rpm floor. A disabled sensor must stay disabled.
+                if(i < this.TemperatureUse.Length && !this.TemperatureUse[i])
+                    continue;
+
+                string name = this.Temperature[i].GetName();
+                byte val = (byte) this.Temperature[i].GetValue();
+                if(name == "CPUT" && val > 0) cpu = val;
+                else if(name == "BIOS" && val > 0) bios = val;
+            }
+
+            // The processor's own sensor wins over both when it is reachable.
+            //
+            // This override lives here, not in the GUI monitor where it started, because
+            // FanProgram.Update() calls straight into GetCpuTemperature() — it never sees
+            // a GUI snapshot. Putting it in the monitor meant the corrected temperature
+            // reached the display and the telemetry CSV while the fan curves, the
+            // thermal-panic check and the tray icon all still ran on the EC sensors that
+            // were measured to be wrong. Every consumer goes through this accessor, so
+            // this is the only place the fix is actually true everywhere.
+            byte die;
+            if(TryGetCpuDieTemperature(out die)) {
+                this.LastCpuTemperature = die;
+                this.IsCpuTemperatureTrusted = true;
+            } else {
+                // Hold the last good die reading. Do NOT substitute another sensor.
+                //
+                // This branch was written expecting to yield 0 — an obviously invalid
+                // number that no consumer would act on. Measured 2026-09-07, it does not:
+                // it yields about 40 °C, and it does so precisely when the machine is
+                // hottest, because the die read fails on Access_PCI contention and
+                // contention peaks under load. 3 of 28 readings above 80 °C were followed
+                // by a value in the 36-46 band, each one a substitution rather than a
+                // measurement, and the fan curve obeyed every one of them — commanding the
+                // fans down while the CPU sat at 95 °C. That is the source of the sudden
+                // fan drops, and it is not a filtering problem: no filter downstream can
+                // recover a reading that was replaced by a different sensor's.
+                //
+                // Holding is what the GPU side already does for the same reason (see
+                // GetGpuTemperature). A held value is stale, and stale is handled: the
+                // trusted flag goes false, and FanProgram's untrusted path winds the fans
+                // down gradually to a floor that still moves air rather than trusting a
+                // number nobody measured.
+                //
+                // bios/cpu are still read above, because a board whose sensor list really
+                // does provide a working CPU sensor should use it — but only when no die
+                // reading has ever been seen. Once the die has worked, it is the source.
+                if(this.dieSmoothedValid)
+                    this.LastCpuTemperature = (byte) Math.Round(this.dieSmoothed);
+                else
+                    this.LastCpuTemperature = bios > cpu ? bios : cpu;
+                this.IsCpuTemperatureTrusted = false;
+            }
+
+            return this.LastCpuTemperature;
+
+        }
+
+        // Obtains the GPU temperature from the GPTM sensor.
+        // Returns 0 if the sensor reports no value this tick.
+        //
+        // CAUTION FOR CALLERS: a return value of 0 is ambiguous and on its own
+        // does NOT mean "no GPU temp sensor on this platform". Two distinct
+        // hardware states both produce 0:
+        //   (a) Discrete GPU is present but currently powered off (Optimus
+        //       parking, low-power suspend, dGPU disabled in BIOS). The
+        //       sensor is real and will read non-zero again once the GPU
+        //       wakes up. Falling back to CPU temp here would cause the GPU
+        //       fan to ramp under CPU load even though the dGPU is idle
+        //       (issue #66).
+        //   (b) Board has no usable GPU temp register at all. The 0 reading
+        //       is permanent and falling back to CPU temp is the right
+        //       behaviour (issue #62).
+        // Use HasObservedGpuTemperature() to discriminate before deciding
+        // whether to substitute a CPU-temp fallback. That helper latches
+        // sticky-true on the first non-zero sample, so case (a) reads as
+        // "sensor present" and case (b) reads as "no sensor".
+        public byte GetGpuTemperature(bool forceUpdate = false) {
+
+            if(forceUpdate)
+                UpdateTemperature(false);
+
+            byte gpu = 0;
+            for(int i = 0; i < this.Temperature.Length; i++) {
+                string name = this.Temperature[i].GetName();
+                byte val = (byte) this.Temperature[i].GetValue();
+                if(name == "GPTM" && val > 0) gpu = val;
+            }
+
+            // Sticky-latch the "we have actually seen GPU telemetry" signal.
+            // Once a non-zero GPTM reading has been observed we know this
+            // platform genuinely has a working GPU temp sensor — subsequent
+            // zero readings then mean "GPU is powered off", not "no sensor".
+            if(gpu > 0)
+                this.gpuTempObserved = true;
+
+            // The GPU's own die sensor wins when it is reachable. GPTM was measured
+            // against it under a 79 W load and does not track it: the die went
+            // 34 -> 76 °C while GPTM moved 26 -> 33 °C, the gap widening with heat.
+            // Same reasoning as the CPU override about why this belongs here and not
+            // in the GUI monitor — the fan curves read this accessor, not a snapshot.
+            int gpuDie;
+            if(OmenMon.Driver.Nvml.TryGetGpuTemperature(out gpuDie)
+                && gpuDie > 0 && gpuDie < Config.MaxBelievableTemperature) {
+
+                gpu = (byte) gpuDie;
+                this.gpuTempObserved = true;
+                this.nvmlWasSource = true;
+                this.gpuFailTicks = 0;
+                this.IsGpuTemperatureTrusted = true;
+
+            } else if(this.nvmlWasSource) {
+
+                // The die sensor has worked before and is not answering now. Do NOT fall
+                // through to GPTM here: it reads around 28 °C under a 79 W load, so taking
+                // it would look like the GPU had suddenly gone cold and would drop the GPU
+                // fan at the exact moment the reading was lost. Hold the last die value.
+                gpu = this.LastGpuTemperature;
+
+                // But do not call it a lost sensor yet. On a hybrid-graphics laptop the
+                // ordinary idle state is a parked GPU with a stale NVML session, and Nvml
+                // deliberately rebuilds that only once a minute rather than every tick.
+                // So a run of failures up to GpuUntrustedGraceTicks is expected and means
+                // nothing; only a run longer than the rebuild interval is a real fault.
+                if(++this.gpuFailTicks >= GpuUntrustedGraceTicks)
+                    this.IsGpuTemperatureTrusted = false;
+
+            } else {
+
+                // No die sensor on this machine at all — GPTM is all there is, and on
+                // boards where it works it is the intended source.
+                this.gpuFailTicks = 0;
+                this.IsGpuTemperatureTrusted = gpu > 0;
+
+            }
+
+            this.LastGpuTemperature = gpu;
+            return this.LastGpuTemperature;
+
+        }
+
+        // Reports whether this platform has demonstrated a usable GPU temperature
+        // sensor at any point since OmenMon started. Returns true once GPTM has
+        // produced at least one non-zero reading via GetGpuTemperature(); returns
+        // false until then.
+        //
+        // The previous implementation (`HasGpuTemperatureSensor`) checked the
+        // configured sensor list for an entry named "GPTM", but the default global
+        // <Temperature> block in OmenMon.xml always contains GPTM, so the check
+        // was effectively true on every platform — including boards without a real
+        // GPU temp register, where it then suppressed the CPU-temp fallback in
+        // FanProgram.Update() and left the GPU fan idling at the 0°C row of the
+        // user's curve. Flipping to a sticky observed-reading flag makes the
+        // signal honest while preserving the issue #66 fix (powered-off GPU now
+        // also reads 0, but the flag stays latched true from earlier samples,
+        // so the fan continues to idle correctly).
+        //
+        // Edge case: if OmenMon starts with the discrete GPU already powered off,
+        // the flag stays false until the GPU produces any non-zero reading later.
+        // During that window FanProgram falls back to CPU temp — same as v1.4.1
+        // behaviour for these boards. Once a real reading lands the flag locks
+        // true permanently and correct per-fan curves resume.
+        public bool HasObservedGpuTemperature() {
+            return this.gpuTempObserved;
+        }
+#endregion
+
+#region Updates
+        // Updates everything
+        public void UpdateAll() {
+            UpdateFans();
+            UpdateSystem();
+            UpdateTemperature();
+        }
+
+        // Updates the fan readings
+        public void UpdateFans() {
+            // Fan readings updated at retrieval time
+        }
+
+        // Updates the system settings
+        public void UpdateSystem() {
+            // System settings updated either only once
+            // during initialization, or at retrieval time
+        }
+
+        // Updates the temperature readings
+        public void UpdateTemperature(bool onlyUsed = false) {
+
+            // A3 (issue #86): batch every sensor read for this tick under one EC
+            // open + mutex hold instead of letting each EcComponent.Update() take and
+            // release Global\Access_EC on its own. This collapses N lock cycles per
+            // monitor tick to a single hold, shrinking the contention window with the
+            // kernel ACPI EC driver (the same contention #88's backoff addresses). The
+            // mutex is reentrant on the owning thread, so the inner per-register reads
+            // are uncontended re-entries; WMI-backed sensors inside the block simply
+            // do not touch the EC.
+            Action updateAll = () => {
+                for(int i = 0; i < Temperature.Length; i++)
+                    if(!onlyUsed || this.TemperatureUse[i])
+                        this.Temperature[i].Update();
+            };
+
+            // If the EC can't be opened/locked this tick, still update directly so the
+            // WMI BIOS temperature sensor (which never touches the EC) keeps refreshing;
+            // the EC-backed sensors then degrade per-component exactly as they did before
+            // the batch existed, rather than the whole tick being skipped.
+            if(!Hw.EcExecBatch(updateAll))
+                updateAll();
+        }
+#endregion
+
+    }
+
+}

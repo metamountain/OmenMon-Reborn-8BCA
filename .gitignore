@@ -1,0 +1,25 @@
+.vs/
+.claude/
+.gemini/
+.qwen/
+QWEN.md
+tmp/
+Bin/
+Obj/
+bin/
+obj/
+*.bak*
+*.tmp
+OmenMon-*.log
+OmenMon-*.csv
+OmenMon-user.conf*
+OmenMon-Calibration-*.md
+OmenMon-Diag-*.md
+OmenMon-Probe-*.md
+
+# Local icon backups (upstream originals, kept while iterating)
+Resources/*.ico.orig
+
+# Working copies of the runtime config kept while tuning curves. The tracked
+# OmenMon.xml is the one that ships; snapshots belong in the install folder.
+OmenMon.xml.*

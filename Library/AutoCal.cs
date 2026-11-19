@@ -1,0 +1,713 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+// OmenMon-Reborn additions © 2026 seakyy
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Xml;
+using OmenMon.Hardware.Ec;
+
+namespace OmenMon.Library {
+
+    // Live overrides discovered by the Auto-Calibration Wizard.
+    //
+    // Lives in OmenMon.Library so the hot read-path in Hardware/Fan.cs can consult
+    // it without taking a dependency on the App layer. Populated by CliOpCalibration
+    // on a successful scan; read by Fan.GetSpeed() on every refresh tick.
+    //
+    // Threading: the calibration worker writes overrides from a thread-pool task
+    // while Fan.GetSpeed() reads them from the GUI refresh tick. To prevent torn
+    // reads (offset from one update + mode from another) the override is published
+    // as a single immutable Override reference and swapped atomically. Readers
+    // observe either the previous value or the new value, never a mix.
+    public static class AutoCal {
+
+        // Immutable per-fan override snapshot — published as a single reference so
+        // (offset, mode, multiplier) is always observed as a coherent triple.
+        public sealed class Override {
+            public readonly byte Reg;
+            public readonly EcDiffScanner.Mode Mode;
+            public readonly int Multiplier; // 0 = use mode default (e.g. 100 for DirectMultiplier8)
+            public Override(byte reg, EcDiffScanner.Mode mode, int multiplier = 0) {
+                Reg = reg; Mode = mode; Multiplier = multiplier;
+            }
+        }
+
+        // Reference assignment is atomic on every CLR target; volatile keeps the
+        // store/load from being reordered. No lock needed for read-mostly use.
+        private static volatile Override _cpu;
+        private static volatile Override _gpu;
+
+        public static bool HasCpu => _cpu != null;
+        public static bool HasGpu => _gpu != null;
+
+        public static bool TryGetCpu(out byte reg, out EcDiffScanner.Mode mode, out int multiplier) {
+            var snap = _cpu;
+            if(snap == null) { reg = 0; mode = default(EcDiffScanner.Mode); multiplier = 0; return false; }
+            reg = snap.Reg; mode = snap.Mode; multiplier = snap.Multiplier; return true;
+        }
+
+        public static bool TryGetGpu(out byte reg, out EcDiffScanner.Mode mode, out int multiplier) {
+            var snap = _gpu;
+            if(snap == null) { reg = 0; mode = default(EcDiffScanner.Mode); multiplier = 0; return false; }
+            reg = snap.Reg; mode = snap.Mode; multiplier = snap.Multiplier; return true;
+        }
+
+        // Publishes a new triple atomically. Pass null to clear that fan's override.
+        // Wizard / Load / Prime / Clear all funnel through here so concurrent readers
+        // never observe a half-written register/mode/multiplier triple.
+        public static void SetCpu(byte? reg, EcDiffScanner.Mode? mode, int multiplier = 0) {
+            _cpu = (reg.HasValue && mode.HasValue) ? new Override(reg.Value, mode.Value, multiplier) : null;
+        }
+
+        public static void SetGpu(byte? reg, EcDiffScanner.Mode? mode, int multiplier = 0) {
+            _gpu = (reg.HasValue && mode.HasValue) ? new Override(reg.Value, mode.Value, multiplier) : null;
+        }
+
+        // Reads the current RPM using the override at <offset> in <mode>.
+        // <multiplier> overrides the per-mode default for DirectMultiplier8 (0 = use default of 100).
+        // Returns -1 if any of the inputs are not valid.
+        public static int ReadRpm(byte offset, EcDiffScanner.Mode mode, int multiplier = 0) {
+            switch(mode) {
+                case EcDiffScanner.Mode.LittleEndian16:
+                    return Hw.EcGetWord(offset);
+                case EcDiffScanner.Mode.PeriodEncoded8: {
+                    int period = Hw.EcGetByte(offset);
+                    // RPM = 60 / (period_ticks * tick_seconds). Tick base differs per board;
+                    // an empirical 60_000_000 / (period * 256) lands close to observed values
+                    // on the boards we've tested. Caller can replace if a better mapping is known.
+                    // Return -1 (not 0) so callers can distinguish a bad/uninitialised
+                    // read from a genuinely stopped fan and fall back to the preset.
+                    if(period <= 0) return -1;
+                    return 60_000_000 / (period * 256);
+                }
+                case EcDiffScanner.Mode.DirectMultiplier8:
+                    return Hw.EcGetByte(offset) * (multiplier > 0 ? multiplier : 100);
+                case EcDiffScanner.Mode.BiosLevelMirror:
+                    // Cannot be serviced from the EC alone — Fan.GetSpeed() handles this
+                    // mode by reading the BIOS-reported fan level directly.
+                    return -1;
+                default:
+                    return -1;
+            }
+        }
+
+        public static void Clear() {
+            _cpu = null;
+            _gpu = null;
+        }
+
+        // Mirror-collision detector (issue #83, reported by @MartinSalg818 on 8BAD).
+        // Returns true when this board has a native preset that drives the CPU and GPU
+        // fans from DISTINCT tachometer registers, yet the currently-published overrides
+        // make both fans resolve to the SAME register — the condition under which the two
+        // fan readouts mirror each other.
+        //
+        // The classic trigger is a single-fan calibration scan: EcDiffScanner hands its
+        // sole candidate to CpuFan, and if that candidate is actually the GPU's tach
+        // register the CPU override then points at it while the GPU side, having no
+        // override, falls back to the preset's (same) register. Both fans then read the
+        // GPU's RPM.
+        //
+        // Compares the *effective* register each fan will read: the published override if
+        // present, otherwise the preset register Fan.GetSpeed() falls back to. Three classes
+        // of board are exempt because a shared register is legitimate there, not a misfire:
+        //   * boards with no native entry (no ground truth to compare against),
+        //   * boards whose preset already shares one register between both fans (single-fan
+        //     SKUs such as 8BB3, FanSpeedReg0 == FanSpeedReg1), and
+        //   * BiosLevelMirror overrides, whose 0 register is a sentinel rather than a real
+        //     EC offset (e.g. 8C9C).
+        internal static bool CollidesWithNativePreset(string productId) {
+            if(string.IsNullOrEmpty(productId) || Config.Models == null) return false;
+            if(!Config.Models.TryGetValue(productId, out var preset)) return false;
+            if(preset.FanSpeedReg0 == preset.FanSpeedReg1) return false;
+
+            bool haveCpu = TryGetCpu(out byte cReg, out EcDiffScanner.Mode cMode, out _);
+            bool haveGpu = TryGetGpu(out byte gReg, out EcDiffScanner.Mode gMode, out _);
+            if(haveCpu && cMode == EcDiffScanner.Mode.BiosLevelMirror) return false;
+            if(haveGpu && gMode == EcDiffScanner.Mode.BiosLevelMirror) return false;
+
+            byte effectiveCpu = haveCpu ? cReg : preset.FanSpeedReg0;
+            byte effectiveGpu = haveGpu ? gReg : preset.FanSpeedReg1;
+            return effectiveCpu == effectiveGpu;
+        }
+
+#region Persistence
+        // Path of the sidecar file CliOpCalibration writes after a successful scan.
+        // Kept separate from OmenMon.xml so the wizard never has to rewrite the main
+        // config and so the user can delete it to undo a calibration without losing
+        // anything else. Exposed so the writer (CliOpCalibration) and the reader
+        // (this class) can never disagree about the filename.
+        public const string SidecarFileName = "OmenMon-AutoCal.xml";
+
+        // Full sidecar path next to the running executable. Single source of truth
+        // for both the load and save paths.
+        public static string SidecarPath =>
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, SidecarFileName);
+
+        // Loads any persisted overrides written by a previous calibration run.
+        // Returns true if at least one override was restored.
+        //
+        // currentProductId is the WMI baseboard product of the running machine. The
+        // sidecar must declare a matching ProductId or it is rejected — otherwise an
+        // 8BD4 calibration carried over to a different laptop (USB stick, OneDrive
+        // sync, swapped install) would happily apply 8BD4 register offsets to a
+        // 2022 Omen and read garbage. A board mismatch deletes the file so the next
+        // wizard run starts clean.
+        //
+        // Called from Platform construction so the registers discovered last session
+        // take effect on the next launch without the user having to re-run the wizard.
+        public static bool Load(string currentProductId) {
+            string path = SidecarPath;
+            if(!File.Exists(path)) return false;
+
+            // --- Auto-calibration sidecars are disabled in this build ---------------
+            // The Auto-Calibration Wizard infers tachometer registers from a 4-step fan
+            // sweep. On boards that expose no usable EC tachometer it cannot fail
+            // safely: on 8BCA it produced a "confirmed" 16-bit LE tachometer at 0xF1
+            // (actually noise — 04 05 / 01 0B / 03 14 in an unused region, accepted
+            // because its return-to-idle check treated 12 as "returned" from an idle of
+            // 1284), and on a second run minutes later found nothing at all. Either
+            // result gets written here and then overrides the hand-verified
+            // KnownBoards mapping on the next launch.
+            //
+            // The verified mapping (KnownBoards) is the single source of truth now, so
+            // any sidecar found is deleted rather than applied.
+            try { File.Delete(path); } catch { }
+            return false;
+#pragma warning disable 0162 // unreachable code — retained for reference / re-enable
+
+
+            try {
+                // Harden the parser against XXE / external-entity expansion. The
+                // sidecar is technically user-writable on disk and we have no reason
+                // to honour DTDs or fetch external resources from it.
+                var settings = new XmlReaderSettings {
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                };
+                var doc = new XmlDocument { XmlResolver = null };
+                using(var stream = File.OpenRead(path))
+                using(var reader = XmlReader.Create(stream, settings)) {
+                    doc.Load(reader);
+                }
+
+                string fileProductId = doc.DocumentElement?.GetAttribute("ProductId");
+
+                // A transient WMI failure on startup turns the current product ID into
+                // "?" (see Settings.GetProduct()). Treat that as "unknown, skip this run"
+                // rather than "foreign machine, nuke the sidecar" — otherwise one bad
+                // WMI read would permanently erase an otherwise valid calibration.
+                bool currentIsUnknown =
+                    string.IsNullOrEmpty(currentProductId)
+                    || currentProductId == "?";
+
+                if(currentIsUnknown) {
+                    return false;
+                }
+
+                if(string.IsNullOrEmpty(fileProductId)
+                    || !string.Equals(fileProductId, currentProductId, StringComparison.OrdinalIgnoreCase)) {
+                    // File belongs to a different machine — discard it so we don't
+                    // poison this board's read-path with foreign offsets.
+                    try { File.Delete(path); } catch { }
+                    return false;
+                }
+
+                XmlNode cpu = doc.SelectSingleNode("/AutoCalibration/CpuFan");
+                XmlNode gpu = doc.SelectSingleNode("/AutoCalibration/GpuFan");
+                // Hoist the out-vars so the sanity check below can read cReg / gReg
+                // without tripping C#'s definite-assignment analysis (it can't tie the
+                // haveCpu / haveGpu booleans to TryParseEntry's success path).
+                byte cReg = 0;
+                EcDiffScanner.Mode cMode = EcDiffScanner.Mode.LittleEndian16;
+                byte gReg = 0;
+                EcDiffScanner.Mode gMode = EcDiffScanner.Mode.LittleEndian16;
+                bool haveCpu = cpu != null && TryParseEntry(cpu, out cReg, out cMode);
+                bool haveGpu = gpu != null && TryParseEntry(gpu, out gReg, out gMode);
+
+                // Sanity check: across every shipped board layout the CPU and GPU fan
+                // tachometer offsets sit within a few bytes of each other (0 for shared
+                // single-fan SKUs, 2 for the canonical 0xB0/0xB2 pair, 3 for 8BD4's
+                // 0x11/0x14, never more). When the persisted offsets are >16 bytes apart
+                // *and* a native model entry already exists for this board, that's a
+                // strong signal the wizard misfired on a transient EC-read glitch
+                // (issue #26: 8DD0 sidecar locked onto 0xB3 / 0xD9 = 38 bytes apart from
+                // a 1-byte-shifted dump, which then displayed as "50k RPM" until the
+                // sidecar was deleted). Discard the file in that case so the next launch
+                // falls through to the native database / Prime() mapping. Boards without
+                // a native entry still trust the sidecar — they have nothing else to fall
+                // back to.
+                bool hasNative = !currentIsUnknown
+                    && Config.Models != null
+                    && Config.Models.ContainsKey(currentProductId);
+                if(hasNative && haveCpu && haveGpu) {
+                    int distance = Math.Abs((int) cReg - (int) gReg);
+                    if(distance > 16) {
+                        try { File.Delete(path); } catch { }
+                        return false;
+                    }
+                }
+
+                // Override-conflict check: when this product is in KnownBoards
+                // (hand-verified ground truth — added precisely because the
+                // wizard heuristic gets the layout wrong on this hardware) and
+                // the persisted sidecar disagrees with that ground truth,
+                // discard the sidecar instead of carrying a known-broken
+                // mapping forward across upgrades. Example: 8C9C's previous
+                // released mapping was (0xF1, DirectMultiplier8 ×60) and is
+                // now (BiosLevelMirror); without this guard, users who ran
+                // the wizard on the old version would keep getting bogus RPM
+                // (~120 RPM at audible MAX) until they manually deleted the
+                // sidecar file (issue #28 follow-up).
+                if(KnownBoards.TryGetValue(currentProductId, out Mapping known)) {
+                    bool cpuMismatch = haveCpu
+                        && (cReg != known.CpuReg || cMode != known.CpuMode);
+                    bool gpuMismatch = haveGpu
+                        && (gReg != known.GpuReg || gMode != known.GpuMode);
+                    if(cpuMismatch || gpuMismatch) {
+                        try { File.Delete(path); } catch { }
+                        return false;
+                    }
+                }
+
+                bool anyApplied = false;
+                if(haveCpu) {
+                    SetCpu(cReg, cMode);
+                    anyApplied = true;
+                }
+                if(haveGpu) {
+                    SetGpu(gReg, gMode);
+                    anyApplied = true;
+                }
+
+                // Mirror-collision self-heal (issue #83): if the overrides we just
+                // restored collapse a distinct-register board's two fans onto the same
+                // tachometer — a single-fan scan that locked onto the other fan's
+                // register — discard the sidecar and fall back to the verified native
+                // preset so the CPU and GPU readouts stop mirroring. Evaluated after
+                // publishing so it weighs the exact effective registers Fan.GetSpeed()
+                // will use; Platform calls Prime() next to refill any fan still on the
+                // preset.
+                if(anyApplied && CollidesWithNativePreset(currentProductId)) {
+                    Clear();
+                    try { File.Delete(path); } catch { }
+                    return false;
+                }
+
+                return anyApplied;
+            } catch {
+                // Corrupt sidecar — better to fall through to the model preset / known-board
+                // mapping than to crash on startup. The next successful run will overwrite it.
+                return false;
+            }
+#pragma warning restore 0162
+        }
+
+        private static bool TryParseEntry(XmlNode node, out byte reg, out EcDiffScanner.Mode mode) {
+            reg = 0; mode = EcDiffScanner.Mode.LittleEndian16;
+            string offset = node.Attributes?["offset"]?.Value;
+            string modeStr = node.Attributes?["mode"]?.Value;
+            if(string.IsNullOrEmpty(offset) || string.IsNullOrEmpty(modeStr)) return false;
+
+            // Accept either "0xB0" or "176"
+            int parsed;
+            if(offset.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+                if(!int.TryParse(offset.Substring(2), System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture, out parsed)) return false;
+            } else {
+                if(!int.TryParse(offset, out parsed)) return false;
+            }
+            if(parsed < 0 || parsed > 0xFF) return false;
+
+            // Reject numeric mode strings ("123") and require an exact named-member
+            // match. Enum.TryParse otherwise accepts any int that fits the underlying
+            // type, which would set HasCpu/HasGpu and block Prime() from filling in
+            // known-board mappings while ReadRpm() silently fell back to -1.
+            modeStr = modeStr.Trim();
+            if(modeStr.Length == 0) return false;
+            if(char.IsDigit(modeStr[0]) || modeStr[0] == '-' || modeStr[0] == '+')
+                return false;
+            if(!Enum.TryParse(modeStr, ignoreCase: true, out EcDiffScanner.Mode parsedMode))
+                return false;
+            if(!Enum.IsDefined(typeof(EcDiffScanner.Mode), parsedMode))
+                return false;
+
+            reg = (byte) parsed;
+            mode = parsedMode;
+            return true;
+        }
+#endregion
+
+#region Known Boards
+        // Mappings the project has confirmed by hand (probe data + user-reported behaviour).
+        // Saves owners of these boards from having to run the wizard themselves and gives
+        // the heuristic a known-good reference to compare against.
+        //
+        // Format: ProductId → (CpuOffset, CpuMode, CpuMul, GpuOffset, GpuMode, GpuMul)
+        // CpuMul/GpuMul: override the per-mode default multiplier (0 = use default).
+        private struct Mapping {
+            public byte CpuReg; public EcDiffScanner.Mode CpuMode; public int CpuMul;
+            public byte GpuReg; public EcDiffScanner.Mode GpuMode; public int GpuMul;
+            // Single physical fan: the GPU fan row should mirror the CPU reading rather
+            // than fall back to the (wrongly-decoded) preset FanSpeedReg1 (#81).
+            public bool SingleFan;
+        }
+
+        private static readonly Dictionary<string, Mapping> KnownBoards =
+            new Dictionary<string, Mapping>(System.StringComparer.OrdinalIgnoreCase) {
+
+            // HP Omen (8600, 2019) — the auto-calibration heuristic locks onto
+            // period-encoded-looking registers (0x06 / 0xF1) when run on default
+            // mode. Under stress test/game load, the correct 16-bit LE tachometers
+            // are revealed at 0x45 / 0x47 (CPU max ~6700, GPU max ~10000 RPM).
+            ["8600"] = new Mapping {
+                CpuReg = 0x45, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0x47, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Omen (8D87, 2025) — 16-bit LE RPM tachometers at 0x70 / 0x9F (CPU max ~6000, GPU max ~5550 RPM).
+            // Standard 2023+ register layout.
+            ["8D87"] = new Mapping {
+                CpuReg = 0x70, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0x9F, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16-S0053NT (8BD4) — probe data shows the legacy RPM tach offsets
+            // 0xB0/0xB2 are repurposed as temperature sensors. The actual fan tachometer
+            // tracks the level register (EC[0x11] / EC[0x14]) and reads as byte ×100 RPM.
+            ["8BD4"] = new Mapping {
+                CpuReg = 0x11, CpuMode = EcDiffScanner.Mode.DirectMultiplier8, CpuMul = 0,
+                GpuReg = 0x14, GpuMode = EcDiffScanner.Mode.DirectMultiplier8, GpuMul = 0,
+            },
+
+            // HP Omen (8DD0, 2025) — the auto-calibration heuristic locks onto two
+            // unrelated period-encoded-looking offsets (0x02 / 0x88) on this board
+            // and produces nonsensical RPM (issue #33: "50k RPM"). Manual probes
+            // across idle / medium / max load consistently show real 16-bit LE
+            // tachometers at the canonical 0xB0 / 0xB2 pair (CPU ~3.2 kRPM idle,
+            // ~5.4 kRPM max; GPU ~3.3 / ~5.2). Pin Prime() to that layout so the
+            // built-in mapping outranks the auto-cal's bad guess after the bogus
+            // sidecar has been rejected by the >16-byte distance sanity check.
+            ["8DD0"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16 (8C9C, 1034NF, 2024) — no reliable EC tachometer.
+            // The previous EC[0xF1] × 60 mapping only tracked during OmenMon-driven
+            // calibration sweeps (where 0xF1 happened to mirror the wizard's commanded
+            // step). In real-world operation — fans driven by the OEM (Omen Gaming Hub
+            // / BIOS thermal loop) — EC[0xF1] reads as ~0x02 even at audible MAX, which
+            // produced obviously wrong RPM (issue #28: OGH visibly at 5800 RPM, OmenMon
+            // showed ~120 RPM). Switch to BiosLevelMirror: the BIOS-reported fan level
+            // already returns 58/61 ≈ 5800/6100 RPM at OGH MAX, matching the OGH display
+            // exactly. CpuMul/GpuMul = 100 because the BIOS level is in units of 100 RPM.
+            ["8C9C"] = new Mapping {
+                CpuReg = 0, CpuMode = EcDiffScanner.Mode.BiosLevelMirror, CpuMul = 100,
+                GpuReg = 0, GpuMode = EcDiffScanner.Mode.BiosLevelMirror, GpuMul = 100,
+            },
+
+            // HP Victus 16 (8BB3, 2024, AMD) — issue #64.
+            // Single-fan SKU. CPU fan register at 0xF1 (DirectMultiplier8 mode).
+            ["8BB3"] = new Mapping {
+                CpuReg = 0xF1, CpuMode = EcDiffScanner.Mode.DirectMultiplier8, CpuMul = 0,
+                GpuReg = 0, GpuMode = default(EcDiffScanner.Mode), GpuMul = 0,
+                SingleFan = true,
+            },
+
+            // HP OMEN 16 wd0xxx (8BA9, 2024) — issue #92, reported by @M1918IIBAR.
+            // Single-fan SKU. The Auto-Calibration scan detected one 16-bit LE
+            // tachometer at 0xF1 and no GPU fan (physically single-fan chassis or a
+            // second fan on a different bus). Decoded from the report's 0/30/70/100%
+            // sweep, EC[0xF1..0xF2]: 0% = 01 07 → 0x0701 = 1793 RPM (idle), 100% =
+            // 05 14 → 0x1405 = 5125 RPM (max), matching the reported idle/max exactly
+            // and rising monotonically across the steps — so LE16 at 0xF1, not the
+            // DirectMultiplier8 single-byte read 8BB3 uses (which would decode 100% as
+            // 0x05 × 100 = 500 RPM, far below the audible max). Read-only mapping only:
+            // no fan-control registers are committed for this board (a wrong
+            // ManualReg/ModeReg could lock the EC), so RPM displays correctly while
+            // fan *control* stays on the auto-detector's safe legacy fallback. SingleFan
+            // mirrors the resolved CPU mapping onto the GPU row so it stops decoding
+            // 0xF1 as a second word (#81 pattern).
+            ["8BA9"] = new Mapping {
+                CpuReg = 0xF1, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0, GpuMode = default(EcDiffScanner.Mode), GpuMul = 0,
+                SingleFan = true,
+            },
+
+            // HP Omen Max 16 (8D41, 2025) — issue #87, #109.
+            // 16-bit LE tachometers at 0x5C (CPU) / 0x70 (GPU).
+            ["8D41"] = new Mapping {
+                CpuReg = 0x5C, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0x70, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP OMEN 17 ck1000nw (8A18, 2022) — issue #84, reported by @xenon205.
+            // The native <Model> entry already pins FanSpeedReg0/1 = 0xB0/0xB2, but a
+            // stale or foreign AutoCal sidecar (or a single-fan rescan) could override
+            // that with a wrong register and reintroduce the post-calibration "garbage
+            // RPM → fan lock / hibernation" symptom the user reported. Pinning the
+            // confirmed 16-bit LE tachometers here too means Load()'s collision
+            // self-heal always has a verified built-in mapping to fall back to, and a
+            // wizard-free install reads correct RPM out of the box. Decoded from the
+            // user's report (0/30/70/100% sweep): CPU 0/1476/3218/3422, GPU
+            // 0/1448/3115/3363 — matching the native preset exactly.
+            ["8A18"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-fb0102la (8A3E, 2023) — issue #96, reported by @David112x
+            // (the same board as the upstream OmenMon issue #85 report). The
+            // Auto-Calibration sweep confirms canonical 16-bit LE tachometers at
+            // 0xB0/0xB2, decoded from the raw dumps: CPU EC[0xB0..0xB1] = B3 01 →
+            // 0x01B3 = 435 RPM at 0% (this CPU fan never fully stops) and 1C 15 →
+            // 0x151C = 5404 RPM at 100%; GPU EC[0xB2..0xB3] = 00 00 at 0% and 4B 14
+            // → 0x144B = 5195 RPM at 100% — both matching the reported idle/max
+            // exactly and rising monotonically across the 0/30/70/100% steps.
+            // Read-only mapping: pins the RPM display out of the box and gives
+            // Load()'s sidecar-collision self-heal a verified ground truth, while
+            // fan *control* stays on the default 2022-layout registers the sweep
+            // already drove successfully (level 0x34/0x35 tracked every step).
+            ["8A3E"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-fa0031dx (8A50, 2023, single-fan) — issue #115, reported by @nean24.
+            // The Auto-Calibration wizard ranked 0x2E highest ("LE16 0 -> 7453") but that pair
+            // is two adjacent temperature bytes: EC[0x2E..0x2F] reads 1D 1D (29/29 °C) at 30 %,
+            // a slow-mover the one-way sweep mistook for a tachometer. The real fan tach is the
+            // canonical legacy LE16 at 0xB0: EC[0xB0..0xB1] = 00 00 at 0 % and 4D 06 -> 0x064D =
+            // 1613 RPM at 30 %, rising monotonically from a true idle of 0. GetFanType = 0x01
+            // (Fan1=Cpu, Fan2=Unsupported) confirms a single physical fan, so SingleFan mirrors
+            // the CPU reading onto the GPU row rather than decoding the adjacent 0xB2 (a second
+            // ~1573 RPM sensor) as a phantom GPU fan. Read-only mapping: pins the RPM display;
+            // fan *control* stays on the default registers. Paired with a HasMaxFanFreeze entry
+            // (FanArray.cs) — the wizard plateau'd at 30 % at this fan's ~1.6 kRPM ceiling.
+            ["8A50"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0, GpuMode = default(EcDiffScanner.Mode), GpuMul = 0,
+                SingleFan = true,
+            },
+
+            // HP OMEN Max 16 / HyperX OMEN Max 16 (8E9A, 2026, single-fan) — issue #110,
+            // reported by @Keith1341 (the same contributor who characterised 8D41). The
+            // EcDiffScanner found one 16-bit LE tachometer at 0xC5 and no GPU fan. Decoded
+            // from the 0/30/70/100 % sweep, EC[0xC5..0xC6] = 99 00 -> 0x0099 = 153 RPM at idle
+            // and 99 07 -> 0x0799 = 1945 RPM once the fan engages (flat from 30 % on — this SKU
+            // holds a low fan ceiling under the wizard's load), matching the reported idle/max
+            // exactly. SingleFan mirrors the CPU reading onto the GPU row (no second tach was
+            // observed — single-fan chassis or a second fan on a different bus). Read-only
+            // mapping only: no fan-control registers are committed for this new 2026 layout, so
+            // the RPM display is fixed without risking the 100 %-fan freeze class of bug.
+            ["8E9A"] = new Mapping {
+                CpuReg = 0xC5, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0, GpuMode = default(EcDiffScanner.Mode), GpuMul = 0,
+                SingleFan = true,
+            },
+
+            // HP Victus 16-r1015nt (8C99, 2024) — issue #112, reported by @serhatta.
+            // DirectMultiplier8 tachometers at EC[0x11] / EC[0x14].
+            ["8C99"] = new Mapping {
+                CpuReg = 0x11, CpuMode = EcDiffScanner.Mode.DirectMultiplier8, CpuMul = 0,
+                GpuReg = 0x14, GpuMode = EcDiffScanner.Mode.DirectMultiplier8, GpuMul = 0,
+            },
+
+            // HP OMEN 16-xf series (8BCA) — HP recycles this ProductId across CPU/
+            // regional variants with conflicting EC layouts (upstream #76/#85 deferred
+            // for exactly this). The canonical 0xB0/0xB2 LE16 tachometers (#114,
+            // @tapsyin) do NOT exist on the 16-xf0079ng / AMD Ryzen 7 7840HS / BIOS F.31
+            // variant: EC[0xB0..0xB1] reads 0x005C (92) and EC[0xB2..0xB3] 0x0000
+            // regardless of fan load — not a tachometer. On that firmware HP's legacy
+            // ACPI thermal-profile WMI methods (GTPS/RDCF/WHCM/WMAA) are absent
+            // (LKML "hp-wmi: Fan control broken on HP OMEN 16-xf0xxx, board 8BCA,
+            // BIOS F.31"), but the HPWMI_GM fan calls (0x1A/0x2D/0x2E/0x27) all work:
+            // GetFanLevel returns CPU 40 / GPU 43 under load and 17 / 20 at idle,
+            // i.e. units of 100 RPM (~4000/4300 loaded, ~1700/2000 idle) — verified by
+            // microphone A/B and confirmed against the firmware fan-curve table
+            // (GetFanTable: 2000..6300 RPM). Use BiosLevelMirror ×100, same as 8C9C:
+            // it is EC-layout-independent so it also reads correctly on @tapsyin's
+            // variant, and it matches what OMEN Gaming Hub displays.
+            ["8BCA"] = new Mapping {
+                CpuReg = 0, CpuMode = EcDiffScanner.Mode.BiosLevelMirror, CpuMul = 100,
+                GpuReg = 0, GpuMode = EcDiffScanner.Mode.BiosLevelMirror, GpuMul = 100,
+            },
+
+            // HP OMEN / Victus (8DD2, 2025/2026) — issue #117, #126, reported by @bobshmo / @Matt0084.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8DD2"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP OMEN 16-xd series (8BCD, 2024) — issue #119, #125, reported by @MrGigaFish / @keonerf.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8BCD"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP OMEN 15-en0xxx (8788, 2020) — issue #120, reported by @Bharadwaj-R.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8788"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-fa1033nn (8C2E, 2025) — issue #121, reported by @Sent1nelllll.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8C2E"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // OMEN MAX Gaming Laptop 16z-ak000 (8D88, 2025) — issue #122, reported by @Big-ol-Corgi.
+            // 16-bit LE tachometers at 0x60 (CPU) / 0x70 (GPU).
+            ["8D88"] = new Mapping {
+                CpuReg = 0x60, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0x70, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-fa1035nt (8BB1, 2023) — issue #123, reported by @Nicholas-Arda.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8BB1"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP OMEN 15-en1004ns (88D2, 2021) — issue #124, reported by @keewan.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["88D2"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-fa2082wm (8DCD, 2025) — issue #127, reported by @karlwithmanyks.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8DCD"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // OMEN 17-db1012nt (8E10, 2026) — issue #129, reported by @karakedimiyav.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8E10"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16-e0111ur (88EE, 2023) — issue #133, reported by @ERZAEEL.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["88EE"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 15-Fa0119TX (8A4F, 2022) — issue #135, reported by @IntellQueue.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8A4F"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // OMEN 15-dh1000sl (8746, 2020) — issue #136, reported by @Alz97.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8746"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Omen 16 - am0279tx (8D3F, 2025) — issue #137, reported by @avid-coder05.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8D3F"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16 r0133tx (8BC2, 2024) — issue #138, reported by @theerapakornfsl-ops.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8BC2"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Omen Transcend 14 (8C58, 2024) — issue #141, reported by @UltraBot05.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8C58"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Omen 14-fb1xxx Transcend (8E41, 2025/2026) — issue #143, reported by @masagrator / @jbweaverling-prog.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8E41"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16-r0xxx (8BBE, 2024) — issue #145, reported by @wpenistone.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8BBE"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // OMEN 16 n0123ax (8A44, 2022) — issue #146, reported by @vanshsharma25.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8A44"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+
+            // HP Victus 16-r0xxx (8BC1, 2023) — issue #157, reported by @ykz0608.
+            // Canonical 16-bit LE tachometers at 0xB0 / 0xB2.
+            ["8BC1"] = new Mapping {
+                CpuReg = 0xB0, CpuMode = EcDiffScanner.Mode.LittleEndian16, CpuMul = 0,
+                GpuReg = 0xB2, GpuMode = EcDiffScanner.Mode.LittleEndian16, GpuMul = 0,
+            },
+        };
+
+        // Pre-populates AutoCal overrides for a known board, *per fan*. Called from
+        // Platform construction after Load(). A user-restored CPU override outranks
+        // the built-in CPU mapping, but if the GPU side wasn't restored — say, the
+        // wizard found only one fan, or the sidecar was hand-edited — the built-in
+        // GPU mapping still fills in. Without per-fan resolution, boards like 8BD4
+        // (which depend on Prime() for non-legacy tach registers) would fall back to
+        // the placeholder FanSpeedReg* in OmenMon.xml and report garbage on the
+        // un-restored fan.
+        public static void Prime(string productId) {
+            if(string.IsNullOrEmpty(productId)) return;
+            if(!KnownBoards.TryGetValue(productId, out var m)) return;
+            if(!HasCpu && (m.CpuReg != 0 || m.CpuMode == EcDiffScanner.Mode.BiosLevelMirror)) SetCpu(m.CpuReg, m.CpuMode, m.CpuMul);
+            if(!HasGpu && (m.GpuReg != 0 || m.GpuMode == EcDiffScanner.Mode.BiosLevelMirror)) SetGpu(m.GpuReg, m.GpuMode, m.GpuMul);
+
+            // #81 (reported by @jpcaldwell30 on 8BB3): single-fan SKUs expose one physical
+            // fan, but the GUI/preset still carries a GPU fan whose FanSpeedReg1 points at
+            // the same register decoded the wrong way (a DirectMultiplier8 byte read as an
+            // LE16 word), so the GPU row showed garbage. When the board is flagged single-fan
+            // and the GPU side has no override of its own, mirror the resolved CPU mapping
+            // onto the GPU so both rows report the one real fan's RPM. CollidesWithNativePreset()
+            // exempts single-fan presets (FanSpeedReg0 == FanSpeedReg1), so this mirror is not
+            // mistaken for a #83 mis-detection.
+            if(m.SingleFan && !HasGpu && TryGetCpu(out byte cReg, out var cMode, out int cMul))
+                SetGpu(cReg, cMode, cMul);
+        }
+
+        // Reports whether a board has a built-in RPM mapping in KnownBoards.
+        // Used by the Auto-Calibration report to reassure the user when the
+        // EcDiffScanner heuristic detects nothing on boards that don't expose a
+        // 16-bit LE tachometer (e.g. 8BB3 — single-fan DirectMultiplier8 at 0xF1,
+        // 8C9C — BiosLevelMirror): RPM is already handled natively, so the scan
+        // returning no candidate is expected, not a malfunction (issue #81).
+        public static bool IsKnownBoard(string productId) {
+            return !string.IsNullOrEmpty(productId) && KnownBoards.ContainsKey(productId);
+        }
+#endregion
+
+    }
+
+}

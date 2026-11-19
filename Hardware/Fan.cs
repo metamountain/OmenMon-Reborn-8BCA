@@ -1,0 +1,147 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+
+using System;
+using OmenMon.Hardware.Bios;
+using OmenMon.Hardware.Ec;
+using OmenMon.Library;
+
+namespace OmenMon.Hardware.Platform {
+
+#region Interface
+    // Defines an interface for interacting with a fan
+    public interface IFan {
+
+        // Retrieves the fan type
+        public BiosData.FanType GetFanType();
+
+        public int GetLevel();  // Retrieves the fan level [krpm]
+        public int GetRate();   // Retrieves the fan rate [%]
+        public int GetSpeed();  // Retrieves the fan speed [rpm]
+
+        // Whether the last GetSpeed() was a tachometer reading or the commanded level
+        // echoed back. False means the number describes an intention, not a rotation.
+        public bool IsSpeedMeasured { get; }
+
+        public void SetLevel(int level);  // Sets the fan level [krpm]
+        public void SetRate(int rate);    // Sets the fan rate [%]
+
+    }
+#endregion
+
+    // Implements a mechanism for interacting with a fan
+    public class Fan : IFan {
+
+#region Implementation
+        // Stores the fan type
+        protected BiosData.FanType FanType;
+
+        // Stores the level data component
+        protected IPlatformReadWriteComponent Level;
+
+        // Stores the rate data components (separate read and write)
+        protected IPlatformReadComponent RateRead;
+        protected IPlatformWriteComponent RateWrite;
+
+        // Stores the speed data component
+        protected IPlatformReadComponent Speed;
+
+        // Constructs a fan instance
+        public Fan(
+            BiosData.FanType type,
+            IPlatformReadWriteComponent level,
+            IPlatformReadComponent rateRead,
+            IPlatformWriteComponent rateWrite,
+            IPlatformReadComponent speed) {
+
+            this.FanType = type;
+            this.Level = level;
+            this.RateRead = rateRead;
+            this.RateRead.SetConstraint(Config.MaxBelievablePercent);
+            this.RateWrite = rateWrite;
+            this.Speed = speed;
+            this.Speed.SetConstraint(Config.FanLevelMax * (100 + Config.MaxBelievableFanSpeedPercentOverMax));
+
+        }
+
+        // Retrieves the fan type
+        public virtual BiosData.FanType GetFanType() {
+            return this.FanType;
+        }
+
+        // Retrieves the fan level [krpm]
+        public virtual int GetLevel() {
+            var levels = Hw.BiosGet(Hw.Bios.GetFanLevel);
+            if(levels == null || levels.Length < (int) this.FanType) return 0;
+            return levels[(int) this.FanType - 1];
+        }
+
+        // Retrieves the fan rate [%]
+        public virtual int GetRate() {
+            this.RateRead.Update();
+            return this.RateRead.GetValue();
+        }
+
+        // Retrieves the fan speed [rpm]
+        //
+        // If the Auto-Calibration Wizard has discovered a register/mode override for
+        // this fan, the override wins over the PlatformPreset configured at construction.
+        // We deliberately do not fall back to the preset on a transient zero — if the
+        // override is wrong the user will see it immediately and can recalibrate, which
+        // is far less confusing than a silent flip-flop between the two readings.
+        public virtual int GetSpeed() {
+            // Pull (offset, mode, multiplier) as a single atomic snapshot — see AutoCal for why.
+            byte reg = 0;
+            EcDiffScanner.Mode mode = default(EcDiffScanner.Mode);
+            int multiplier = 0;
+            bool have =
+                this.FanType == BiosData.FanType.Cpu ? AutoCal.TryGetCpu(out reg, out mode, out multiplier) :
+                this.FanType == BiosData.FanType.Gpu ? AutoCal.TryGetGpu(out reg, out mode, out multiplier) :
+                false;
+
+            if(have) {
+                // Boards with no real EC tachometer (e.g. 8C9C) advertise their RPM via
+                // the BIOS-reported fan level × multiplier. AutoCal cannot service this
+                // mode without a fan-type context, so we resolve it here using the same
+                // GetLevel() call used by the slider — keeping a single source of truth.
+                if(mode == EcDiffScanner.Mode.BiosLevelMirror) {
+                    // Not a measurement. This is the level we commanded, read back and
+                    // multiplied by 100 — it tracks the command and is identical whether
+                    // the impeller is spinning or stationary. Observed directly on board
+                    // 8BCA: the fans were audibly stopped while this reported 1700.
+                    //
+                    // Anything presenting this to a user has to know that, or the number
+                    // borrows the authority of a sensor it does not have. Hence the flag.
+                    this.IsSpeedMeasured = false;
+                    return GetLevel() * (multiplier > 0 ? multiplier : 100);
+                }
+
+                int rpm = AutoCal.ReadRpm(reg, mode, multiplier);
+                if(rpm >= 0) { this.IsSpeedMeasured = true; return rpm; }
+            }
+
+            this.Speed.Update();
+            this.IsSpeedMeasured = true;
+            return this.Speed.GetValue();
+        }
+
+        // False when GetSpeed() returned the commanded level rather than a reading from a
+        // tachometer. Board 8BCA has no working tachometer at all, so it is always false
+        // here; other boards set it true. Meaningful only after a GetSpeed() call.
+        public bool IsSpeedMeasured { get; private set; } = true;
+
+        // Sets the fan level [krpm]
+        public virtual void SetLevel(int level) {
+            this.Level.SetValue(level);
+        }
+
+        // Sets the fan rate [%]
+        public virtual void SetRate(int rate) {
+            this.RateWrite.SetValue(rate);
+        }
+#endregion
+
+    }
+
+}

@@ -1,0 +1,696 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023-2024 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+// OmenMon-Reborn additions © 2026 seakyy
+
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Windows.Forms;
+using OmenMon.Hardware.Bios;
+using OmenMon.Hardware.Ec;
+using OmenMon.Hardware.Platform;
+using OmenMon.Library.Locale;
+
+namespace OmenMon.Library {
+
+    // Implements application-wide configuration settings look-up
+    // This part only defines the configuration variables
+    public static partial class Config {
+
+        // Application metadata
+        public static string AppFile = Process.GetCurrentProcess().MainModule.FileName;
+        public static string AppName = typeof(App).Assembly.GetName().Name;
+        public static string AppVersion = Application.ProductVersion;
+        public static int AppProcessId = Process.GetCurrentProcess().Id;
+        public const string AppHomepageLink = "https://omenmon.github.io/";
+
+        // Automatically apply settings on start
+        public static bool AutoConfig = false;
+
+        // Automatically start up with Windows
+        public static bool AutoStartup = false;
+
+        // Ignore BIOS errors if false (for not fully compatible devices)
+        public static bool BiosErrorReporting = true;
+
+        // BIOS heartbeat interval [ms]: periodic GetFanCount() keeps Performance Control alive
+        // Set to 0 to disable
+        public static int BiosHeartbeatInterval = 30000;
+
+        // Pause BIOS heartbeat on battery power to prevent HP firmware from forcing hibernate.
+        // The heartbeat keeps HP's "Performance Control" session alive; on battery this conflicts
+        // with the BIOS battery-manager and can trigger unexpected hibernation after extended use.
+        public static bool BiosHeartbeatPauseOnBattery = true;
+
+        // Battery-glitch hibernation guard. When OmenMon detects an implausibly large drop in
+        // Windows-reported battery percentage while AC power is connected (>= BatteryGlitchDropPercent
+        // within BatteryGlitchWindowMs), it tells Windows not to enter sleep/hibernate for
+        // BatteryGlitchHoldMs by holding ES_CONTINUOUS | ES_SYSTEM_REQUIRED via
+        // SetThreadExecutionState. Targets the torn-EC-read symptom reported on certain
+        // Victus/Omen SKUs (issue #59 / #56-comments) where the Windows battery driver reads
+        // a transient 0xFF or near-zero from the Smart Battery System and the OS Critical
+        // Battery Action triggers Hibernate even though the laptop is plugged in.
+        // The check is suppressed when running on battery — a legitimate low-battery state
+        // there should still hibernate normally.
+        public static bool BatteryGlitchGuard = true;
+        public static int BatteryGlitchDropPercent = 30;   // minimum drop to flag a glitch [%]
+        public static int BatteryGlitchWindowMs   = 5000; // must drop this much within [ms]
+        public static int BatteryGlitchHoldMs     = 30000; // suppress hibernate for [ms] after detection
+        public static bool BatteryGlitchGuardOnBattery = false; // run glitch guard on battery power
+        public static bool BatteryGlitchGuardDisableTimeout = false; // disable 60-second safety timeout
+        public static bool BatteryGlitchGuardHoldAlways = false; // permanently hold the hibernation blocker
+
+        // Keep the system awake while the display is switched off via the
+        // Graphics → Set Display Off tray action. On Modern Standby (S0) systems
+        // "display off" doubles as the sleep trigger, so without this guard the
+        // action puts the whole laptop to sleep instead of just blanking the
+        // screen (issue #103). Held via ES_SYSTEM_REQUIRED on a dedicated thread,
+        // released automatically on the first user input (= display wake).
+        // Set to false to restore the bare SC_MONITORPOWER broadcast.
+        public static bool DisplayOffKeepAwake = true;
+
+        // AC-flicker debounce. Some HP Omen / Victus SKUs briefly report AC as disconnected
+        // (PowerLineStatus goes Online -> Offline -> Online for a few seconds) under load,
+        // even though the laptop is physically plugged in. Without this guard, the AutoConfig
+        // + alternate fan program path in GuiOp.PowerChange() instantly swaps Default <->
+        // DefaultAlt during the flicker, causing visible CPU/power throttling stutters
+        // mid-game (issue #70 reported by @MartinSalg818). With the guard on, OmenMon waits
+        // AcFlickerHoldMs after a PowerModeChanged event before acting; if the line status
+        // has reverted by then, the flicker is treated as noise and no fan-program switch,
+        // heartbeat toggle, or auxiliary action is performed. Set AcFlickerGuard=false or
+        // AcFlickerHoldMs=0 to restore the pre-fix immediate-reaction behaviour.
+        public static bool AcFlickerGuard = true;
+        public static int  AcFlickerHoldMs = 10000; // wait [ms] for AC state to stabilize before acting
+
+        // Multi-sample confirmation at the end of the debounce window. When the
+        // hold elapses the deferred handler reads IsFullPowerConfirmed
+        // AcFlickerConfirmSamples times with AcFlickerConfirmIntervalMs between
+        // reads and only acts if every sample agrees. If they disagree, the
+        // event is re-queued for another full hold window. Caps the cascade at
+        // AcFlickerMaxDeferralMs so a pathological flapper still reaches a
+        // decision in bounded time.
+        public static int  AcFlickerConfirmSamples = 3;     // 1 disables multi-sample
+        public static int  AcFlickerConfirmIntervalMs = 250;
+        public static int  AcFlickerMaxDeferralMs = 60000;  // safety ceiling on re-deferrals
+
+        // Passive AC-state poll. SystemEvents.PowerModeChanged is normally the
+        // event that kicks off the debounce, but Windows occasionally drops or
+        // coalesces these events, especially when several fire in quick
+        // succession during a flicker. With this enabled the GUI timer also
+        // checks PowerLineStatus on every tick and synthesises a deferred
+        // change when the live state diverges from Op.FullPower and nothing is
+        // already pending. Cheap — one SystemInformation.PowerStatus read per
+        // GuiTimerInterval, no EC traffic.
+        public static bool AcFlickerPassivePoll = true;
+
+        // Thermal Panic Mode: when max sensor temperature exceeds the threshold, OmenMon
+        // forces both fans to maximum and shows a balloon alert. Deactivates with hysteresis.
+        // Only active when GuiDynamicIcon=true (requires live sensor reads already happening).
+        // Default is false (opt-in) to prevent false triggers or BIOS interference.
+        public static bool ThermalPanicEnabled = false;
+        public static byte ThermalPanicTemperature = 90;  // activate at [°C]
+        public static byte ThermalPanicHysteresis  =  5;  // deactivate at (threshold - this)
+
+        // Display temperature in Fahrenheit instead of Celsius
+        public static bool TemperatureUseFahrenheit = false;
+
+        // Color presets (overriden at runtime if found in the configuration file)
+        public static SortedDictionary<string, BiosData.ColorTable> ColorPreset =
+            new SortedDictionary<string, BiosData.ColorTable>() {
+                ["DefaultOem"] = new BiosData.ColorTable("0F84FA:710FFA:F9350F:FAAC0F"),
+                ["DefaultApp"] = new BiosData.ColorTable("0080FF:00FF00:00FF00:FFFFFF") };
+
+        // Prefix for default color presets, name to be resolved through locale
+        public const string ColorPresetDefaultPrefix = "Default";
+
+        // Display identity, deliberately separate from AppName.
+        //
+        // AppName is the assembly name ("OmenMon") and has to stay exactly that: the
+        // settings-XML root element <OmenMon>, the scheduled-task names and the mutex
+        // names are all derived from it, so changing it would orphan an existing
+        // configuration. Everything the user reads goes through the two below instead,
+        // so the window title, the About box and the error report cannot drift apart.
+        //
+        // The board ID is the suffix because that is the string another owner of the
+        // same machine searches for - HP support threads, OmenMon's KnownBoards table,
+        // the calibration reports and the Linux OMEN tools all key on it.
+        public const string ProductName = "OmenMon Reborn";
+
+        private static string boardId;
+        public static string BoardId {
+            get {
+                if(boardId != null)
+                    return boardId;
+
+                // Explicit override first, for testing another board's naming
+                boardId = Environment.GetEnvironmentVariable("OMENMON_MODEL");
+
+                if(string.IsNullOrEmpty(boardId))
+                    try {
+                        boardId = (Microsoft.Win32.Registry.GetValue(
+                            @"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\BIOS",
+                            "BaseBoardProduct", null) as string)?.Trim();
+                    } catch { }
+
+                // Fall back to the DMI system product name
+                // ("OMEN by HP Gaming Laptop 16-xf0xxx" -> "16-xf0xxx")
+                if(string.IsNullOrEmpty(boardId))
+                    try {
+                        string model = (Microsoft.Win32.Registry.GetValue(
+                            @"HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\BIOS",
+                            "SystemProductName", null) as string)?.Trim();
+                        if(!string.IsNullOrEmpty(model))
+                            boardId = model.Replace("by HP Gaming Laptop ", "")
+                                           .Replace("by HP ", "").Replace("Gaming Laptop ", "").Trim();
+                    } catch { }
+
+                return boardId = boardId ?? "";
+            }
+        }
+
+        // "OmenMon Reborn 8BCA" - the name shown in the title bar and in error reports
+        public static string DisplayName {
+            get {
+                return string.IsNullOrEmpty(BoardId) ? ProductName : ProductName + " " + BoardId;
+            }
+        }
+
+        // DPI scaling factors, for responding to system DPI changes while the application is running
+        public const int DpiSizeAdjFactorX = 10; // Divided by 100
+        public const int DpiSizeAdjFactorY = 33; // Divided by 100
+
+        // Embedded Controller operation parameters
+        public static int EcMonInterval  = 1000; // Embedded Controller monitoring interval
+        public static int EcMutexTimeout =  200; // How long before bailing out trying to get a mutex
+
+        // Total budget for acquiring the EC mutex, across repeated EcMutexTimeout attempts.
+        // A single attempt made any moment of contention a modal error, and the usual
+        // holder is OmenMon's own monitor thread mid-batch rather than another
+        // application, so a short retry loop resolves what used to be an error dialog.
+        // Set equal to (or below) EcMutexTimeout to restore the old single-attempt
+        // behaviour.
+        public static int EcMutexTotalTimeout = 2500;
+
+        public static int EcFailLimit  = 15;  // Maximum number of failed attempts waiting to read
+        public static int EcRetryLimit =  3;  // Maximum number of read and write attempts
+        public static int EcWaitLimit  = 30;  // Iterations before waiting fails each time
+        public static int EcWaitSpinCount = 5; // Fast spins before backing off while waiting on a busy EC (issue #88; >= EcWaitLimit restores the legacy pure-spin)
+        public static int EcWaitYieldCount = 10; // Iterations after EcWaitSpinCount that yield (Thread.Sleep(0)) before escalating to a 1 ms sleep, bounding the worst-case mutex hold below EcMutexTimeout (A4, issue #88)
+
+        // Environment variable settings
+        public static string EnvVarSelfName = AppName;
+        public const string EnvVarSelfValueGui = "Quiet";
+        public const string EnvVarSelfValueKey = "Key";
+        public const string EnvVarSysRoot = "SystemRoot";
+
+        // Exit status
+        public enum ExitStatus : int {
+            NoError     = 0,  // Default
+            ErrorBios   = 1,  // BIOS initialization error
+            ErrorEc     = 2,  // Embedded Controller initialization error
+            ErrorLocale = 3,  // Localizable message system error
+            ErrorTask   = 4   // Invalid task identifier
+        }
+
+        // Whether to always extend the fan countdown timer, even with no fan program
+        // running, or constant-speed button selected, and the main window hidden
+        public static bool FanCountdownExtendAlways = false;
+
+        // Fan countdown extension threshold and interval [s]
+        public static int FanCountdownExtendInterval = 120;
+        public static int FanCountdownExtendThreshold = 5;
+
+        // Fan level thresholds (for custom level setting with trackbars in Const mode)
+        public static int FanLevelMax = 55;
+        public static int FanLevelMin = 20;
+
+        // Set manual fan mode first using the Embedded Controller before setting fan levels
+        public static bool FanLevelNeedManual = false;
+
+        // Whether to use the Embedded Controller instead of a BIOS call to set the fan level
+        public static bool FanLevelUseEc = false;
+
+        // Fan modes that should always be placed on top of the list
+        // (the rest are legacy modes, irrelevant but kept for completeness)
+        public static List<string> FanModesSticky = new List<string> { "Default", "Performance", "Cool" };
+
+        // Fan programs (populated at runtime)
+        public static SortedList<string, FanProgramData> FanProgram =
+            new SortedList<string, FanProgramData>();
+
+        // Default fan program, which might be loaded on startup
+        public static string FanProgramDefault; // Unset by default, since there is no default fan program
+
+        // Default alternative fan program when the system is not on AC power
+        public static string FanProgramDefaultAlt; // Unset by default
+
+        // Whether to check first (using the EC) if the fan mode is not set already
+        // before setting it (using a BIOS WMI call) when a fan program is running
+        public static bool FanProgramModeCheckFirst = false;
+
+        // If true, fan program will be suspended whenever the system enters low-power mode
+        // such as sleep, standby or hibernation, to be automatically re-enabled upon resume
+        public static bool FanProgramSuspend = true;
+
+        // Configuration XML file path
+        public static string FilePath = "";
+
+        // Fan speed string format (adds a thousand separator)
+        public const string FormatFanSpeed = "N0";
+
+        // Default GPU power setting, which might be loaded on startup
+        public static string GpuPowerDefault = "Maximum";
+
+        // Interval between applying the GPU power settings again
+        // (repeated, since they don't always take effect the first time)
+        public static int GpuPowerSetInterval = 200;
+
+        // Pairs of color values to create either a warm or a cool gradient
+        // Note: for some reason, Color.FromArgb() only takes signed input
+        // even though it would make much more sense to be unsigned
+        public const int GuiColorCoolDark = unchecked((int) 0xFF8804FF); // Magenta
+        public const int GuiColorCoolLite = unchecked((int) 0xFF03EF9B); // Teal
+        public const int GuiColorWarmDark = unchecked((int) 0xFFFF0802); // Red
+        public const int GuiColorWarmLite = unchecked((int) 0xFFAC02FF); // Orange
+
+        // Two additional colors for the RTF text box with better readability
+        public const int GuiColorTextBlue = unchecked((int) 0xFF4182C9); // Blue
+        public const int GuiColorTextTeal = unchecked((int) 0xFF0C9D7A); // Teal
+
+        // Palette for the system-information strip at the bottom of the window.
+        // The original table put system grey in slot 1 and pure black in slot 2, which
+        // on the dark UI left the status line black-on-near-black; slots 3-6 were fully
+        // saturated primaries that glared against it. These are the dark-mode
+        // equivalents, matching the GuiTheme palette: muted grey for field labels,
+        // near-white for the status line, and desaturated state colours.
+        public const int GuiColorRtfLabel  = unchecked((int) 0xFF9A9AA4); // 1: field labels
+        public const int GuiColorRtfText   = unchecked((int) 0xFFF4F4F5); // 2: status line
+        public const int GuiColorRtfOk     = unchecked((int) 0xFF4ADE80); // 3: green, "OK"
+        public const int GuiColorRtfWarn   = unchecked((int) 0xFFF87171); // 4: red, fault
+        public const int GuiColorRtfValue  = unchecked((int) 0xFF60A5FA); // 5: blue, values
+        public const int GuiColorRtfFlag   = unchecked((int) 0xFFC084FC); // 6: violet, flags
+
+        // Builds the RTF colour table header. Kept in one place because the same table
+        // is needed both as the compile-time default and after the configuration loads
+        public static string BuildSysInfoRtfHeader() {
+            return SysInfoRtfPreHeader
+                + "{\\colortbl;"
+                + Conv.GetColorStringRtf(GuiColorRtfLabel)
+                + Conv.GetColorStringRtf(GuiColorRtfText)
+                + Conv.GetColorStringRtf(GuiColorRtfOk)
+                + Conv.GetColorStringRtf(GuiColorRtfWarn)
+                + Conv.GetColorStringRtf(GuiColorRtfValue)
+                + Conv.GetColorStringRtf(GuiColorRtfFlag)
+                + "}";
+        }
+
+        // Color to draw the keyboard in if the backlight is off
+        public static int GuiColorKbdBacklightOff = System.Drawing.SystemColors.Control.ToArgb();
+
+        // Original colors for each zone, to be replaced in the keyboard drawing
+        // Zones as defined in BiosData.KbdZone
+        public static int[] GuiColorKbdZoneOrig = new int[4] {
+            unchecked((int) 0xFF444444),   // Zone 0: Right
+            unchecked((int) 0xFF888888),   // Zone 1: Middle
+            unchecked((int) 0xFFCCCCCC),   // Zone 2: Left
+            unchecked((int) 0xFFFFFFFF)};  // Zone 3: WASD 
+
+        // Predefined custom colors for the color picker
+
+        // Note #1: values must be in 0x00BBGGRR format
+
+        // Note #2: four values (#0, #1, #8 and #9) are
+        // reserved for the current backlight at runtime,
+        // these are set to black here
+
+        // The colors are:
+
+        // Row #1:
+        // #60F70F  ( 96, 247,  15)  Lime
+        // #00CF35  (  0, 207,  53)  Green
+        // #3AE5E7  ( 58, 229, 231)  Cyan
+        // #26A1D5  ( 38, 161, 213)  Sky Blue
+        // #061AFF  (  6,  26, 255)  Deep Blue
+
+        // Row #2:
+        // #FDE005  (253, 224,   5)  Yellow
+        // #FE6006  (254,  96,   6)  Orange
+        // #F90D1B  (249,  13,  27)  Red
+        // #FF0080  (255,   0, 128)  Purple 
+        // #9C1AE7  (156,  26, 231)  Violet
+
+        public static int[] GuiColorPickerCustom = new int[16] {
+            0x000000, 0x000000, 0xFFFFFF, 0x0FF760, 0x35CF00, 0xE7E53A, 0xD5A126, 0xFF1A06,
+            0x000000, 0x000000, 0xFFFFFF, 0x05E0FD, 0x0660FE, 0x1B0DF9, 0x8000FF, 0xE71A9C };
+
+        // Whether closing the window closes the whole application
+        public static bool GuiCloseWindowExit = false;
+
+        // Whether to resize the main window if DPI changes
+        public static bool GuiDpiChangeResize = false;
+
+        // Whether to use a dynamic notification icon by default
+        public static bool GuiDynamicIcon = false;
+
+        // Whether the dynamic icon has a background or not
+        public static bool GuiDynamicIconHasBackground = false;
+
+        // Font to size ratio, based on empirical values of 23/32, 29/40, 35/48, 44/60, 46/64
+        public const float GuiDynamicIconFontSizeRatio = 0.71875f;
+
+        // Multiplier at which to render the dynamic notification icon, defaults to 2
+        public const byte GuiDynamicIconUpscaleRatio = 2;
+
+        // Size for the custom font used for figures [px]
+        public const int GuiFigureFontSize = 23;
+
+        // Name under which a custom message identifier is registered for cross-instance communication
+        public const string GuiMessageId = "WM_OMENMON_FOCUS";
+
+        // Inset for the customized progress bar
+        public const int GuiProgressBarInset = 2;
+
+        // Whether the main form remains on top of other windows when shown
+        public static bool GuiStayOnTop = false;
+
+        // Override System Information font size (leave 0 for the default)
+        public static int GuiSysInfoFontSize = 0;
+
+        // Timer interval, determines how frequently a tick occurs [ms]
+        public const int GuiTimerInterval = 1000;
+
+        // How long to show a tip in the notification area, disabled if set to 0
+        public static int GuiTipDuration = 30000;
+
+        // Custom action for the Omen key handler
+        public static bool KeyCustomActionEnabled = false;
+        public static string KeyCustomActionExecCmd = "";
+        public static string KeyCustomActionExecArgs = "";
+        public static bool KeyCustomActionMinimized = false;
+
+        // Use the Omen key to cycle through keyboard color presets
+        // (takes priority over KeyToggleFanProgram and KeyCustomAction)
+        public static bool KeyToggleColorPreset = false;
+
+        // Do not show a balloon tip notification when cycling presets
+        public static bool KeyToggleColorPresetSilent = false;
+
+        // Use the Omen key to control fan program
+        // (as long as KeyCustomAction is set to false)
+        public static bool KeyToggleFanProgram = false;
+
+        // If true, Omen key cycles through all fan programs,
+        // instead of toggling the default fan program on and off
+        public static bool KeyToggleFanProgramCycleAll = true;
+
+        // Show window first Omen key press (if not shown already),
+        // before using subsequent keypresses to control fan program
+        public static bool KeyToggleFanProgramShowGuiFirst = true;
+
+        // Do not show a balloon tip notification when changing programs
+        public static bool KeyToggleFanProgramSilent = false;
+
+        // Localizable string prefixes and suffixes
+        public const string L_CLI = "Cli";
+        public const string L_CLI_BIOS = "CliBios";
+        public const string L_CLI_EC = "CliEc";
+        public const string L_CLI_PROG = "CliProg";
+        public const string L_CLI_TASK = "CliTask";
+        public const string L_DATATYPE_NAME = "DataType";
+        public const string L_DATATYPE_SYNTAX = "DataSyntax";
+        public const string L_GUI = "Gui";
+        public const string L_GUI_ABOUT = "GuiAbout";
+        public const string L_GUI_MAIN = "GuiMain";
+        public const string L_GUI_MENU = "GuiMenu";
+        public const string L_GUI_TIP = "GuiTip";
+        public const string L_PROG = "Prog";
+        public const string L_UNIT = "Unit";
+        public const string LS_CUSTOM_FONT = "_CustomFont"; // Suffix
+
+        // Exclusivity lock names or paths
+        public static string LockNameMux = AppName + "-Mux";
+        public const string LockPathEc = "Global\\Access_EC"; // Commonly-observed value
+        public const string LockPathCli = "Global\\OmenMonCli";
+        public const string LockPathGui = "Global\\OmenMonGui";
+
+        // Maximum believable speed percent over maximum value when reading from the Embedded Controller (used for fan speed)
+        public const int MaxBelievableFanSpeedPercentOverMax = 10;
+
+        // Maximum believable percent value when reading from the Embedded Controller (used for fan rate)
+        public const int MaxBelievablePercent = 100;
+
+        // Maximum believable temperature value when reading from the Embedded Controller
+        public const int MaxBelievableTemperature = 99;
+
+        // nVidia Display Container service name
+        public const string NvDisplayContainerService = "NVDisplay.ContainerLocalSystem";
+
+        // Location for temporary files (must be declared before OnlyOncePath)
+        public static string PathTemp = Environment.GetEnvironmentVariable("TEMP");
+
+        // Parameters for the persistent state until reboot flag implementation
+        public static string OnlyOnceFileExt = ".txt";
+        public static string OnlyOncePath = PathTemp;
+
+        // Display refresh rate values [Hz]
+        public static int PresetRefreshRateHigh = 165;
+        public static int PresetRefreshRateLow = 60;
+
+        // Registry hive prefix
+        public const string RegHiveMachine = "HKEY_LOCAL_MACHINE";
+
+        // nVidia Advanced Optimus multiplexer status registry location
+        public const string RegMuxKey = "SYSTEM\\CurrentControlSet\\Services\\nvlddmkm\\Global\\NvHybrid\\Persistence\\ACE";
+        public const string RegMuxValue = "InternalMuxState";
+
+        // Default shell executable registry location
+        public const string RegShellKey = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon";
+        public const string RegShellValue = "Shell";
+
+        // System information rich-text field settings
+        public const string SysInfoRtfPreHeader = "{\\rtf1\\ansi\\ansicpg1252\\deff0";
+        public static string SysInfoRtfHeader = BuildSysInfoRtfHeader();
+
+        public const string SysInfoRtfFooter = " }";
+
+        // Folder where scheduled tasks are stored
+        public const string TaskFolder = "\\";
+        public static string TaskRunPath = Environment.GetEnvironmentVariable(EnvVarSysRoot) + "\\System32\\schtasks.exe";
+        public const string TaskRunArgs = "/run /tn ";
+
+        // Structure to hold temperature sensor information
+        public struct TemperatureSensorData {
+
+            // Resolved numerical value
+            // to be passed to the source
+            public byte Register;
+
+            // Where the data originates from
+            public PlatformData.LinkType Source;
+
+            // Whether the sensor is used
+            // or only being displayed
+            public bool Use;
+
+            // Constructor with all parameters
+            public TemperatureSensorData(
+                PlatformData.LinkType source,
+                byte register = 0,
+                bool use = true) {
+
+                // Do not accept empty register values
+                // if the source is the Embedded Controller
+                if(source == PlatformData.LinkType.EmbeddedController
+                    && register == 0)
+
+                    // Throw an exception if that is the case
+                    throw new ArgumentOutOfRangeException();
+
+                // Set the structure data
+                this.Source = source;
+                this.Register = register;
+                this.Use = use;
+
+            }
+
+            // Constructor with no register
+            public TemperatureSensorData(
+                PlatformData.LinkType source,
+                bool use = true) : this(source, 0, use) { }
+
+        }
+
+        // Temperature sensors (overriden at runtime if found in the configuration file)
+        public static Dictionary<string, TemperatureSensorData> TemperatureSensor =
+            new Dictionary<string, TemperatureSensorData> {
+
+                // CPU temperature
+                ["CPUT"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.CPUT),
+
+                // GPU temperature
+                ["GPTM"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.GPTM),
+
+                // Temperature reported by the BIOS
+                // (values more or less a third lower than other readings,
+                // thus currently makes no sense to use for maximum check)
+                ["BIOS"] = new TemperatureSensorData(
+                    PlatformData.LinkType.WmiBios, false),
+
+                // Platform Controller Hub temperature
+                ["RTMP"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.RTMP),
+
+                // Memory temperature
+                ["TMP1"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.TMP1),
+
+                // Auxilliary EC temperature probe #2 (disabled by default — unreliable on many models, triggers false fan curves)
+                ["TNT2"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.TNT2, false),
+
+                // Auxilliary EC temperature probe #3 (disabled by default)
+                ["TNT3"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.TNT3, false),
+
+                // Auxilliary EC temperature probe #4 (disabled by default)
+                ["TNT4"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.TNT4, false),
+
+                // Auxilliary EC temperature probe #5 (disabled by default)
+                ["TNT5"] = new TemperatureSensorData(
+                    PlatformData.LinkType.EmbeddedController,
+                    (byte) EmbeddedControllerData.Register.TNT5, false) };
+
+        // Maximum number of temperature sensors
+        public const int TemperatureSensorMax = 9;
+
+        // Model database (populated at runtime from XML, empty = use PlatformPreset.Default for all devices)
+        // Keyed by WMI baseboard ProductId. Case-insensitive so lookups stay consistent
+        // with AutoCal.KnownBoards and AutoCal.Load's OrdinalIgnoreCase product compare
+        // (WMI casing via Settings.GetProduct() is not guaranteed). ProductIds are
+        // uppercase hex by convention, so the shipped <Models> keys do not differ only
+        // by case; note that with OrdinalIgnoreCase any two entries that DID differ only
+        // by case would overwrite each other on load/save, so authors must keep keys unique.
+        public static Dictionary<string, OmenMon.Hardware.Platform.PlatformPreset> Models =
+            new Dictionary<string, OmenMon.Hardware.Platform.PlatformPreset>(StringComparer.OrdinalIgnoreCase);
+
+        // Timestamp format in fan program status messages
+        public const string TimestampFormat = "HH:mm:ss";
+
+        // Scheduled task identifiers
+        public enum TaskId {
+            Gui,  // Autorun GUI on Windows startup
+            Key,  // Omen key capture task
+            Mux   // nVidia Advanced Optimus bug fix task
+        }
+
+        // Scheduled task data
+        public static Dictionary<TaskId, string[]> Task =
+            new Dictionary<TaskId, string[]>() {
+                [TaskId.Gui] = new string[] { AppName, "-Run Gui" },
+                [TaskId.Key] = new string[] { AppName + " Key", "-Run Key", "root\\wmi", "SELECT * FROM hpqBEvnt WHERE eventData = 8613 AND eventId = 29" },
+                [TaskId.Mux] = new string[] { AppName + " Mux", "-Run Mux", "root\\default", "SELECT * FROM RegistryValueChangeEvent WHERE Hive = \"" + RegHiveMachine + "\" AND KeyPath = \"" + RegMuxKey + "\" AND ValueName = \"" + RegMuxValue + "\"" }
+        };
+
+
+        // How often the dynamic notification icon is updated (in ticks)
+        public static int UpdateIconInterval = 3;
+
+        // How often the monitoring data on the main form is updated (in ticks)
+        public static int UpdateMonitorInterval = 3;
+
+        // How often the program settings are updated (in ticks)
+        public static int UpdateProgramInterval = 15;
+
+        // Wait duration when stopping a process (Explorer shell) or a service (nVidia Container)
+        public const int WaitToStopProcess = 1000;
+        public const int WaitToStopService = 500;
+
+        // WMI event settings
+        public const string WmiEventSuffixConsumer = "Consumer";
+        public const string WmiEventSuffixFilter = "Filter";
+        public const string WmiQueryLang = "WQL";
+
+        // Configuration XML elements and attributes
+        private const string XmlElementColorPresets = "ColorPresets";
+        private const string XmlElementColorPreset = "Preset";
+        private const string XmlElementFanPrograms = "FanPrograms";
+        private const string XmlElementFanProgram = "Program";
+        private const string XmlElementFanProgramMode = "FanMode";
+        private const string XmlElementFanProgramPower = "GpuPower";
+        private const string XmlElementFanProgramLevel = "Level";
+        private const string XmlElementFanProgramLevelCpu = "Cpu";
+        private const string XmlElementFanProgramLevelGpu = "Gpu";
+        private const string XmlElementTemperature = "Temperature";
+        private const string XmlElementTemperatureSensor = "Sensor";
+        private const string XmlAttrColorPresetName = "Name";
+        private const string XmlAttrFanProgramName = "Name";
+        private const string XmlAttrFanProgramLevelTemperature = "Temperature";
+        private const string XmlAttrTemperatureSensorName = "Name";
+        private const string XmlAttrTemperatureSensorSource = "Source";
+        private const string XmlAttrTemperatureSensorSourceValueBios = "BIOS";
+        private const string XmlAttrTemperatureSensorSourceValueEc = "EC";
+        private const string XmlAttrTemperatureSensorUse = "Use";
+        private const string XmlElementConfig = "Config";
+        private const string XmlElementKeyCustomAction = "KeyCustomAction";
+
+        // Model database XML elements and attributes
+        private const string XmlElementModels = "Models";
+        private const string XmlElementModel = "Model";
+        private const string XmlAttrModelProductId = "ProductId";
+        private const string XmlAttrModelDisplayName = "DisplayName";
+        private const string XmlElementFanLevelReg0     = "FanLevelReg0";
+        private const string XmlElementFanLevelReg1     = "FanLevelReg1";
+        private const string XmlElementFanRateReadReg0  = "FanRateReadReg0";
+        private const string XmlElementFanRateReadReg1  = "FanRateReadReg1";
+        private const string XmlElementFanRateWriteReg0 = "FanRateWriteReg0";
+        private const string XmlElementFanRateWriteReg1 = "FanRateWriteReg1";
+        private const string XmlElementFanSpeedReg0     = "FanSpeedReg0";
+        private const string XmlElementFanSpeedReg1     = "FanSpeedReg1";
+        private const string XmlElementCountdownReg     = "CountdownReg";
+        private const string XmlElementManualReg        = "ManualReg";
+        private const string XmlElementManualValueOn    = "ManualValueOn";
+        private const string XmlElementManualValueOff   = "ManualValueOff";
+        private const string XmlElementTempCpuReg       = "TempCpuReg";
+        private const string XmlElementTempGpuReg       = "TempGpuReg";
+        private const string XmlElementModeReg          = "ModeReg";
+        private const string XmlElementSwitchReg        = "SwitchReg";
+
+        // Configuration XML node prefixes
+        private static string XmlPrefix = AppName + "/" + XmlElementConfig + "/"; // Must end with a slash
+        private static string XmlPrefixColorPresets = XmlPrefix + XmlElementColorPresets + "/"; // Slash
+        private static string XmlPrefixColorPreset = XmlPrefixColorPresets + XmlElementColorPreset; // No slash
+        private static string XmlPrefixFanPrograms = XmlPrefix + XmlElementFanPrograms + "/"; // Slash
+        private static string XmlPrefixFanProgram = XmlPrefixFanPrograms + XmlElementFanProgram; // No slash
+        private static string XmlPrefixKeyCustomAction = XmlPrefix + XmlElementKeyCustomAction + "/"; // Slash
+        private static string XmlPrefixTemperature = XmlPrefix + XmlElementTemperature + "/"; // Slash
+        private static string XmlPrefixTemperatureSensor = XmlPrefixTemperature + XmlElementTemperatureSensor; // No slash
+        private static string XmlPrefixModels = XmlPrefix + XmlElementModels + "/"; // Slash
+        private static string XmlPrefixModel = XmlPrefixModels + XmlElementModel; // No slash
+
+        // Whether to skip the annoying Byte Order Mark (BOM) when saving the XML configuration
+        private const bool XmlSaveBom = false;
+
+        // Strings representing Boolean flags used when saving to XML
+        // Note: must be one of the values from Library.Conv.GetBool()
+        private const string XmlSaveBoolFalse = "false";
+        private const string XmlSaveBoolTrue = "true";
+        private const string XmlSaveIndent = "    ";
+
+        // Template XML configuration file (rudimentary, a better version replaces this when locale is loaded)
+        private static string XmlTemplate = "<?xml version=\"1.0\" encoding=\"utf-8\"?>" + Environment.NewLine + "<OmenMon/>";
+
+    }
+
+}

@@ -1,0 +1,177 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace OmenMon.External {
+
+    // Windows NT Kernel (kernel32.dll) resources
+    // Used for console manipulation
+    // and hardware operations with a kernel driver
+    public class Kernel32 {
+
+#region Windows NT Kernel Data
+        // Console manipulation
+
+        public const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
+
+        public const int STD_OUTPUT_HANDLE = -11;
+        public const int STD_ERROR_HANDLE  = -12;
+
+        public static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+        // File operations
+
+        public enum MoveFileFlags : uint {
+
+            MOVEFILE_REPLACE_EXISTING      = 0x00000001,
+            MOVEFILE_COPY_ALLOWED          = 0x00000002,
+            MOVEFILE_DELAY_UNTIL_REBOOT    = 0x00000004,
+            MOVEFILE_WRITE_THROUGH         = 0x00000008,
+            MOVEFILE_CREATE_HARDLINK       = 0x00000010,
+            MOVEFILE_FAIL_IF_NOT_TRACKABLE = 0x00000020
+
+        }
+
+        // Power-management coordination — used by Library/PowerGuard to keep Windows
+        // awake during transient battery-percentage glitches (issue #59).
+        // SetThreadExecutionState is documented at
+        // https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setthreadexecutionstate
+        [Flags]
+        public enum ExecutionState : uint {
+            None             = 0x00000000,
+            SystemRequired   = 0x00000001,   // prevent system idle-to-sleep transitions
+            DisplayRequired  = 0x00000002,   // prevent display sleep
+            UserPresent      = 0x00000004,   // obsolete, kept for completeness
+            AwayModeRequired = 0x00000040,   // away-mode: appears off but isn't
+            Continuous       = 0x80000000    // keep the requested state until cleared
+        }
+
+        // Hardware operations with a kernel driver
+
+        public const int ERROR_SERVICE_ALREADY_RUNNING = unchecked((int) 0x80070420);
+        public const int ERROR_SERVICE_EXISTS          = unchecked((int) 0x80070431);
+
+        public const uint OLS_TYPE = 40000;
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct IOControlCode {
+            public uint Code { get; }
+
+            public IOControlCode(uint deviceType, uint function, Access access) : this(deviceType, function, Method.Buffered, access) { }
+
+            public IOControlCode(uint deviceType, uint function, Method method, Access access) {
+                Code = (deviceType << 16) | ((uint) access << 14) | (function << 2) | (uint) method;
+            }
+
+            public enum Method : uint {
+                Buffered  = 0,
+                InDirect  = 1,
+                OutDirect = 2,
+                Neither   = 3
+            }
+
+            public enum Access : uint {
+                Any   = 0,
+                Read  = 1,
+                Write = 2
+            }
+        }
+
+        public static readonly IOControlCode IOCTL_OLS_GET_REFCOUNT = new(OLS_TYPE, 0x801, Kernel32.IOControlCode.Access.Any);
+        public static readonly IOControlCode IOCTL_OLS_READ_MSR = new(OLS_TYPE, 0x821, Kernel32.IOControlCode.Access.Any);
+        public static readonly IOControlCode IOCTL_OLS_WRITE_MSR = new(OLS_TYPE, 0x822, Kernel32.IOControlCode.Access.Any);
+        public static readonly IOControlCode IOCTL_OLS_READ_IO_PORT_BYTE = new(OLS_TYPE, 0x833, Kernel32.IOControlCode.Access.Read);
+        public static readonly IOControlCode IOCTL_OLS_WRITE_IO_PORT_BYTE = new(OLS_TYPE, 0x836, Kernel32.IOControlCode.Access.Write);
+        public static readonly IOControlCode IOCTL_OLS_READ_PCI_CONFIG = new(OLS_TYPE, 0x851, Kernel32.IOControlCode.Access.Read);
+        public static readonly IOControlCode IOCTL_OLS_WRITE_PCI_CONFIG = new(OLS_TYPE, 0x852, Kernel32.IOControlCode.Access.Write);
+        public static readonly IOControlCode IOCTL_OLS_READ_MEMORY = new(OLS_TYPE, 0x841, Kernel32.IOControlCode.Access.Read);
+#endregion
+
+#region Windows NT Kernel Imports
+        public const string DllName = "kernel32.dll";
+
+        // Console manipulation
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern bool AttachConsole(uint dwProcessId);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern bool AllocConsole();
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern bool FreeConsole();
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi, SetLastError = true)]
+        public static extern uint GetConsoleProcessList(uint[] processList, uint processCount);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern IntPtr GetConsoleWindow();
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern IntPtr GetStdHandle(int nStdHandle);
+
+        // File operations
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi, CharSet = CharSet.Unicode, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, MoveFileFlags dwFlags);
+
+        // Hardware operations with a kernel driver
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern IntPtr CreateFile (
+            string lpFileName,
+            uint dwDesiredAccess,
+            FileShare dwShareMode,
+            IntPtr lpSecurityAttributes,
+            FileMode dwCreationDisposition,
+            FileAttributes dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern bool DeviceIoControl (
+            SafeFileHandle device,
+            IOControlCode ioControlCode,
+            [MarshalAs(UnmanagedType.AsAny)] [In] object inBuffer,
+            uint inBufferSize,
+            [MarshalAs(UnmanagedType.AsAny)] [Out] object outBuffer,
+            uint nOutBufferSize,
+            out uint bytesReturned,
+            IntPtr overlapped);
+
+        // Power management — returns the previous ExecutionState on success, or 0 on failure.
+        // OmenMon calls this from Library/PowerGuard to suppress hibernate during transient
+        // battery-percentage glitches on plugged-in systems (issue #59). SetLastError is
+        // enabled so callers that need to distinguish "failure" from "previous state was
+        // ExecutionState.None" can consult Marshal.GetLastWin32Error().
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern ExecutionState SetThreadExecutionState(ExecutionState esFlags);
+
+        // Resets the calling thread's last-error code. Deliberately declared WITHOUT
+        // SetLastError=true so the CLR does not capture/overwrite the value we just
+        // cleared. PowerGuard calls this immediately before SetThreadExecutionState so
+        // Marshal.GetLastWin32Error() reflects only that call — Win32 APIs are not
+        // guaranteed to clear last-error on success, so a stale non-zero value from an
+        // earlier P/Invoke would otherwise be misread as a failure when the API
+        // legitimately returns ExecutionState.None as its previous state.
+        [DllImport(DllName, CallingConvention = CallingConvention.Winapi)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        public static extern void SetLastError(uint dwErrCode);
+#endregion
+
+    }
+
+}

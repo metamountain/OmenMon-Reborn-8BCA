@@ -1,0 +1,215 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Windows.Forms;
+using OmenMon.AppCli;
+using OmenMon.AppGui;
+using OmenMon.Library;
+
+namespace OmenMon {
+
+    // The application's main class
+    public class App {
+
+        // Application entry point
+        [STAThread]
+        public static void Main(string[] args) {
+
+            // Set up an event handler to run on exit
+            AppDomain.CurrentDomain.ProcessExit += OnExit;
+
+            // Wire the telemetry-free crash dumper as early as possible so
+            // even an exception thrown during Config.Initialize gets a log
+            // file written next to the executable (no network involved).
+            Crash.Install();
+
+            // Initialize the configuration class
+            Config.Initialize();
+
+            // Initialize the hardware class
+            Hw.Initialize();
+
+            try {
+
+                // If no arguments were given,
+                // run in GUI (Windows Forms) mode
+                if(args.Length == 0) {
+
+#region GUI (Windows Forms) Mode
+                    // Set up the Windows Forms interface
+                    Gui.Initialize();
+
+                    // Only allow a single GUI instance at any given time
+                    bool isFirstInstance;
+                    using(Mutex mutex = new Mutex(
+                        true,
+                        Config.LockPathGui,
+                        out isFirstInstance)) {
+
+                        if(isFirstInstance) {
+
+                            // Start minimized with just a notification icon
+                            Application.Run(new GuiTray());
+
+                            // Release the lock when done
+                            mutex.ReleaseMutex();
+
+                        } else {
+
+                            // Decide what to broadcast to the running instance based on why
+                            // this second copy was launched (env var set by the caller).
+                            string envVar = Environment.GetEnvironmentVariable(Config.EnvVarSelfName);
+
+                            if(envVar == null
+                                || envVar.Contains(Config.EnvVarSelfValueGui))
+
+                                // Manual relaunch (or autorun): bring the running instance
+                                // to the user's attention.
+                                Gui.BroadcastMessage(
+                                    Gui.MessageId,
+                                    Gui.MessageParam.AnotherInstance);
+
+                            else if(envVar.Contains(Config.EnvVarSelfValueKey))
+
+                                // Omen Key spawned us while another instance is already running.
+                                // Toggle the main window instead of silently failing (issue #21).
+                                Gui.BroadcastMessage(
+                                    Gui.MessageId,
+                                    Gui.MessageParam.ToggleGui);
+
+                        }
+
+                    }
+#endregion
+
+                // In this special argument case,
+                // launch a task in headless mode
+                } else if(args[0].ToLower() == "-run") {
+
+                    CliOp.TaskRun(args);
+
+                // As for any other command-line arguments,
+                // process them in CLI (Console) mode
+                } else {
+
+#region CLI (Console) Mode
+                    // If this is the first CLI instance,
+                    // relaunch as a console application
+                    bool isFirstInstance;
+                    using(Mutex mutex = new Mutex(
+                        true,
+                        Config.LockPathCli,
+                        out isFirstInstance)) {
+
+                        if(isFirstInstance) {
+
+                            // Relaunch the process as a console application
+                            Cli.Relaunch(args);
+
+                            // Release the lock when done
+                            mutex.ReleaseMutex();
+
+                            // Make the command prompt reappear
+                            Cli.RestorePrompt();
+
+                        } else {
+
+                            // Attach the console (which is detached by default)
+                            Cli.Initialize();
+
+                            // Output the header
+                            Cli.PrintHeader();
+
+                            // Process all command-line arguments
+                            // and perform the operations as requested
+                            CliOp.Loop(args);
+
+                        }
+
+                    }
+
+                }
+#endregion
+
+            } catch(Exception e) {
+
+                // Any unhandled errors will result in a pop-up dialog
+                // or be output to the console if it is initialized
+
+                Error("ErrUnexpected|EXCEPTION", e);
+
+            }
+
+        }
+
+#region Error & Exit Handlers
+        // Handles an error depending on whether the application is running in CLI or GUI mode
+        public static void Error(string messageIds, Exception e = null) {
+
+            // Everything the user is shown also goes to OmenMon-error.log. Errors that
+            // only appear now and then — the EC lock timeout, a failed configuration
+            // save — are the ones hardest to catch in the act, and a dialog the user
+            // dismisses leaves nothing behind to analyse afterwards.
+            Config.ErrorLog(messageIds, e);
+
+            if(Cli.IsInitialized)
+
+                // Error out to the console
+                Cli.PrintError(Config.GetError(messageIds, e), e);
+
+            else
+
+                // Pop up a window
+                Gui.ShowError(Config.GetError(messageIds, e), e);
+
+        }
+
+        // Terminates the application
+        public static void Exit(Config.ExitStatus code = Config.ExitStatus.NoError) {
+
+            // Running as a console (CLI) application
+            if(Cli.IsInitialized)
+
+                // Make the command prompt reappear
+                // since that's the end of it
+                Cli.RestorePrompt();
+
+            // Running as a Windows Forms (GUI) application
+            if(GuiTray.Context != null && GuiTray.Context.Notification != null)
+                GuiTray.Context.Notification.Visible = false;
+
+            System.Environment.Exit((int) code);
+
+        }
+
+        // Handler that gets called when the application is about to exit
+        private static void OnExit(object sender, EventArgs e) {
+
+                // Close the hardware, if opened
+                if(Hw.IsInitialized)
+                    Hw.Close();
+
+                // Release the AMD SMN module handle, if one was ever opened
+                OmenMon.Driver.PawnIoAmd.Close();
+
+                // Release the NVML handle, if the GPU library was ever opened
+                OmenMon.Driver.Nvml.Close();
+
+                // Free the console, if running as a CLI app
+                if(Cli.IsInitialized)
+                    Cli.Close();
+
+                // Close the forms, if running as a GUI app
+                if(Gui.IsInitialized)
+                    Gui.Close();
+
+        }
+#endregion
+
+    }
+
+}

@@ -1,0 +1,1024 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023-2024 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+
+using System;
+using System.Collections.Generic;
+using OmenMon.Hardware.Bios;
+using OmenMon.Library;
+
+namespace OmenMon.Hardware.Platform {
+
+#region Data
+    // Stores fan program data
+    public class FanProgramData {
+
+        // Fan mode to maintain while the program is running
+        public BiosData.FanMode FanMode;
+
+        // GPU power level to set when the program starts
+        public BiosData.GpuPowerLevel GpuPower;
+
+        // Stores the mapping of temperature thresholds
+        // to fan levels for each fan
+        public SortedDictionary<byte, byte[]> Level;
+
+        // Fan program name
+        public string Name;
+
+        // Constructs a fan program data instance
+        public FanProgramData(
+            string name,
+            BiosData.FanMode fanMode,
+            BiosData.GpuPowerLevel gpuPower,
+            SortedDictionary<byte, byte[]> level) {
+
+            this.Name = name;
+            this.FanMode = fanMode;
+            this.GpuPower = gpuPower;
+            this.Level = level;
+
+        }
+
+    }
+#endregion
+
+    // Stores fan program logic
+    public class FanProgram {
+
+#region Variables & Initialization
+        // Status callback importance rating
+        public enum Severity {
+            Verbose,    // Only for reference
+            Notice,     // Might be shown if possible
+            Important   // Need to be shown to the user
+        }
+
+        // Callback method for status updates
+        private Action<FanProgram.Severity, string> Callback;
+
+        // GPU power data for the current program
+        private BiosData.GpuPowerData GpuPowerData;
+
+        // State flags
+        public bool IsAlternate { get; private set; }
+        public bool IsEnabled { get; private set; }
+        public bool IsSuspended { get; private set; }
+
+        // Consecutive ticks with no trustworthy CPU temperature. See Update().
+        private int untrustedTicks;
+
+        // True while the CPU reading is not trustworthy. Replaces the old handedBack
+        // flag; the fans are never handed to the firmware now, so there is nothing to
+        // hand back from.
+        private bool cpuUntrusted;
+        private int cpuUntrustedLevel;
+
+        // Ticks of a bad CPU reading before the floor starts rising. Five at the 2 s tick
+        // is ten seconds - long enough that a single collision on the Access_PCI mutex,
+        // which PawnIoAmd retries through, never gets this far.
+        private const int UntrustedTicksBeforeFloor = 5;
+
+        // Where the floor is heading: the level the active curve uses at this
+        // temperature. Taken from the curve rather than hard-coded, so a Silent profile
+        // stays quieter than a Performance one even in this state. 75 °C is warm enough
+        // to be protective and cool enough not to sound like a fault.
+        private const byte UntrustedTargetC = 75;
+
+        // One level - 100 rpm - per tick, in both the CPU and GPU untrusted ramps
+        private const int UntrustedRampStep = 1;
+
+        // Attempts at the countdown write within a single pass.
+        //
+        // Two, not three, and the reason is latency rather than reliability. Each attempt
+        // already contains EcMutexTotalTimeout (2500 ms) of internal retry inside
+        // Hw.EcRequest, and SetCountdown is a write plus a read-back, so an attempt can
+        // cost five seconds on a contended EC. Three of those is fifteen — and this runs
+        // inside FanProgram.Update(), which ApplyFanSettings calls on the UI thread when
+        // the user picks a profile. That was a visibly stuck window. A second attempt is
+        // worth having; a third buys almost nothing and costs another five seconds.
+        private const int CountdownWriteAttempts = 2;
+
+        // Consecutive dropped countdown writes, for the log line that reports recovery
+        private int countdownWriteFailures;
+
+        // The GPU side of the same problem, but ramping the other way: see Update(). The
+        // held GPU value can only be too high, so its floor walks down rather than up.
+        private int gpuUntrustedLevel;
+        private int gpuUntrustedTarget;
+
+        // 2500 rpm: clearly audible, clearly moving air, and well short of the 3800 rpm
+        // the curve reaches under real load. A GPU that is actually hot is not cooled by
+        // this alone, but nothing here substitutes for a working sensor - it is what
+        // keeps the card ventilated until one comes back. Never raises the fan: if the
+        // reading is lost while already below this, the lower level is kept.
+        private const int GpuUntrustedFloor = 25;
+
+        // For the log line, so the number and its meaning cannot drift apart
+        private const string UntrustedGpuGraceDescription = "longer than the NVML rebuild interval";
+
+        // Kept for callers that ask "is the curve in charge right now?" - it is, always,
+        // but not following the curve while the CPU reading is missing.
+        public bool IsHandedBack { get { return this.cpuUntrusted; } }
+
+        // Last fan mode and GPU power data before the program started
+        private BiosData.FanMode LastFanMode;
+        private BiosData.GpuPowerData LastGpuPowerData;
+
+        // Level list for the current program
+        // to facilitate threshold look-ups
+        private List<byte> Levels;
+
+        // Name of the last running program
+        private string Name;
+
+        // Parent class reference
+        private Platform Platform;
+
+        // Constructs a fan program instance
+        public FanProgram(
+            Platform platform,
+            Action<FanProgram.Severity, string> callback) {
+
+            this.Callback = callback;
+            this.GpuPowerData = default(BiosData.GpuPowerData);
+            this.IsAlternate = false;
+            this.IsEnabled = false;
+            this.IsSuspended = false;
+            this.LastFanMode = BiosData.FanMode.Default;
+            this.LastGpuPowerData = default(BiosData.GpuPowerData);
+            this.Levels = new List<byte>();
+            this.Name = "";
+            this.Platform = platform;
+
+        }
+#endregion
+
+#region Public Methods
+        // Retrieves the name of the current fan program
+        public string GetName() {
+
+            return this.Name;
+
+        }
+
+        // Re-enable fan program
+        // following a resume from suspend
+        public bool Resume() {
+
+            // Fail if no program active
+            // or if not suspended
+            if(!this.IsEnabled || !this.IsSuspended)
+                return false;
+
+            // Set the state flag
+            this.IsSuspended = false;
+
+            // Force an immediate countdown and fan-off latch check on resume, and apply
+            // the profile's fan mode and GPU power BEFORE Update() writes fan levels.
+            this.lastCountdownWriteAt = DateTime.MinValue;
+            this.offCheckTicks = 0;
+            UpdateFanMode(true);
+            UpdateGpuPower(true);
+
+            // Update the program
+            Update();
+
+            // Report success
+            return true;
+
+        }
+
+        // Starts a fan program given its name
+        public bool Run(string name, bool isAlternate = false) {
+
+            // Note: no need to terminate
+            // the previous program first, if any
+
+            // Try to set up the new program
+            // bail out if not succesful
+            if(!Setup(name))
+                return false;
+
+            // Enable manual fan mode
+            if(Config.FanLevelNeedManual)
+                Platform.Fans.SetManual(true);
+
+            // Set the alternate flag
+            this.IsAlternate = isAlternate;
+
+            // Set the state flag
+            this.IsEnabled = true;
+
+            // Save the last fan mode
+            this.LastFanMode = Platform.Fans.GetMode();
+
+            // Save the last GPU power state
+            this.LastGpuPowerData = Platform.System.GetGpuPower();
+
+            // Apply the profile's fan mode and GPU power once at startup BEFORE writing
+            // fan levels. Calling SetFanMode (WMI 0x1A) on every tick AFTER SetFanLevel
+            // (WMI 0x2E) hands fan control back to the BIOS thermal table on board 8BCA.
+            this.lastCountdownWriteAt = DateTime.MinValue;
+            this.offCheckTicks = 0;
+            UpdateFanMode(true);
+            UpdateGpuPower(true);
+
+            // Update the program
+            Update();
+
+            // Report success
+            return true;
+
+        }
+
+        // Suspend the running fan program
+        public bool Suspend() {
+
+            // Fail if no program active
+            // or if already suspended
+            if(!this.IsEnabled || this.IsSuspended)
+                return false;
+
+            // Set the state flag
+            this.IsSuspended = true;
+
+            // Reset fan speed
+            SetFanLevel(new byte[] { Byte.MaxValue, Byte.MaxValue } );
+
+            // Disable manual fan mode
+            if(Config.FanLevelNeedManual)
+                Platform.Fans.SetManual(false);
+
+            // Restore the previous fan mode
+            UpdateFanMode(true, this.LastFanMode);
+
+            // Restore the previous GPU power settings
+            UpdateGpuPower(true, this.LastGpuPowerData);
+
+            // Report success
+            return true;
+
+        }
+
+        // Terminates the running fan program, if any is running
+        public bool Terminate() {
+
+            // Fail if no program active
+            if(!this.IsEnabled)
+                return false;
+
+            // Reset fan speed
+            SetFanLevel(new byte[] { Byte.MaxValue, Byte.MaxValue } );
+
+            // Disable manual fan mode
+            if(Config.FanLevelNeedManual)
+                Platform.Fans.SetManual(false);
+
+            // Restore the previous fan mode
+            UpdateFanMode(true, this.LastFanMode);
+
+            // Restore the previous GPU power settings
+            UpdateGpuPower(true, this.LastGpuPowerData);
+
+            // Set the state flags
+            this.IsAlternate = false;
+            this.IsEnabled = false;
+            this.IsSuspended = false;
+
+            // Reset data
+            Reset();
+
+            // Update the status
+            Status(Severity.Notice, Config.Locale.Get(Config.L_PROG + "End"));
+
+            // Report success
+            return true;
+
+        }
+
+        // Updates the fan program, if any is running
+        public bool Update() {
+
+            // Fail if no program active
+            // or program is suspended
+            if(!this.IsEnabled || this.IsSuspended)
+                return false;
+
+            // Re-arm the BIOS countdown first, before anything that can be slow.
+            //
+            // The countdown at EC 0x63 hands the fans to the firmware if it is not
+            // refreshed within FanCountdownExtendInterval. Measured lapse, 2026-09-06
+            // 21:29:29: the CPU fan fell from 4400 rpm (level 44) to 1500 rpm (level 15)
+            // while the CPU was at 90 °C, which the curve would never ask for; the CPU
+            // reached 94 °C and only recovered at 21:29:44, the moment the countdown read
+            // 120 again and the level jumped back to 45.
+            //
+            // Two things made that possible. The refresh used to be the *last* step of
+            // this pass, behind every sensor read, the level write, the mode check and
+            // the GPU power update — and each EC operation in front of it can retry for
+            // EcMutexTotalTimeout before giving up. And the call was guarded on
+            // FanProgramModeCheckFirst, which is false in the shipped config, so
+            // UpdateCountdown() was never reached at all: the only thing refreshing the
+            // countdown was the side effect of UpdateFanMode's forced write. One dropped
+            // write and the watchdog was simply not fed, with nothing to notice.
+            //
+            // So it goes first, it goes unconditionally, and it verifies. Raising
+            // FanCountdownExtendThreshold and the monitor thread's priority did not
+            // prevent the second lapse because neither addressed either half of this.
+            //
+            // "Unconditionally" means this call is always REACHED — which was the actual
+            // defect — not that it always writes. It used to pass forceUpdate: true,
+            // which skips the threshold check and re-armed a 120 s watchdog once every
+            // second, an EC write plus a read-back on the tick that can least afford one
+            // (2026-09-08: the fan tick averaged 5.5 s against a nominal 1 s, and this
+            // was the most expensive EC operation in it). The guard writes whenever the
+            // countdown is under UpdateProgramInterval + FanCountdownExtendThreshold —
+            // 61 s of margin on a 120 s watchdog — so roughly one write a minute instead
+            // of sixty.
+            //
+            // Safe in the direction that matters: a GetCountdown() that times out returns
+            // 0, which is below the threshold, so a failed read produces a write rather
+            // than a skip. The watchdog can only be over-fed by a bad read, never starved.
+            UpdateCountdown();
+
+            // Read individual CPU and GPU temperatures, without refreshing the EC.
+            //
+            // This used to pass forceUpdate: true, which runs Platform.UpdateTemperature()
+            // — an EcExecBatch across every configured sensor — on every fan tick. On this
+            // board that batch cannot influence the result: CPUT is Use="false" because
+            // EC 0x57 is firmware string data, so the loop inside GetCpuTemperature skips
+            // it, and TryGetCpuDieTemperature() runs unconditionally and wins regardless
+            // of this flag. The SMN die read and NVML are the two numbers the curve acts
+            // on, and neither goes near the EC.
+            //
+            // So the batch was pure latency on the one thread that must not wait — and
+            // the EC is contended here by OmenCap and HP's system-event services, at up
+            // to EcMutexTotalTimeout apiece. The monitor pass still refreshes these
+            // sensors every UpdateMonitorInterval for the display; the worst this costs
+            // is a BIOS-sensor fallback value up to two seconds old, on a path that only
+            // runs when the die read has already failed.
+            byte cpuTemp = Platform.GetCpuTemperature(false);
+            byte gpuTemp = Platform.GetGpuTemperature(false);
+
+            // When the CPU temperature cannot be trusted, keep control and raise the
+            // floor. Do NOT hand the fans back to the firmware.
+            //
+            // Handing back was tried and rejected. The reasoning was sound on paper —
+            // thinkpad-acpi's fan watchdog re-enables firmware control on expiry "to make
+            // sure the fan is never left set to an unsafe level because of userspace
+            // problems", Framework's EC has autofan for the same reason, NBFC's porting
+            // guide tells config authors to find the register value that returns control
+            // to the EC firmware. But on this board the firmware's idea of automatic is
+            // to stop the fans entirely, and it let the CPU reach 94 °C under sustained
+            // all-core load while we watched. Silence is not a safe default here.
+            //
+            // Why the reading is lost at all: the die goes through the cross-process
+            // Access_PCI mutex, and anything else polling the same AMD SMN register —
+            // Core Temp, HWiNFO, Ryzen Master — can make a read fail. Measured: the die
+            // reading died mid-session, the curve then ran on EC 0x57 (firmware string
+            // data, plausible-looking and unable to rise), and the CPU passed 90 °C with
+            // the fans at their 1700 rpm floor. PawnIoAmd now retries and reopens, so
+            // this should be rare; what follows is for when it happens anyway.
+            //
+            // The response is the mirror of the GPU one. There the held value can only be
+            // too high, so the fan eases down to a floor. Here we have no temperature at
+            // all and the machine may be heating, so the floor walks *up* — one step per
+            // tick towards the level the active curve would use at UntrustedTargetC. That
+            // is audible within a few seconds, reaches a genuinely protective speed inside
+            // a minute, and drops straight back to the curve the moment a real reading
+            // returns. It never parks the fans and never goes silent.
+            if(!Platform.IsCpuTemperatureTrusted) {
+
+                if(++this.untrustedTicks >= UntrustedTicksBeforeFloor && !this.cpuUntrusted) {
+                    this.cpuUntrusted = true;
+                    Status(Severity.Important,
+                        "No trustworthy CPU temperature - raising the fan floor, curve suspended");
+                    Config.ErrorLog("FanProgram.CpuUntrusted", null,
+                        "CPU temperature untrusted for " + this.untrustedTicks
+                            + " ticks; holding fan control and walking the floor up towards the "
+                            + UntrustedTargetC + " °C row (fans are NOT handed to the firmware)");
+                }
+
+            } else if(this.cpuUntrusted || this.untrustedTicks > 0) {
+
+                if(this.cpuUntrusted) {
+                    this.cpuUntrusted = false;
+                    this.cpuUntrustedLevel = 0;
+                    Status(Severity.Notice, "CPU temperature recovered - resuming the curve");
+                    Config.ErrorLog("FanProgram.CpuUntrusted", null, "CPU temperature recovered, resuming the curve");
+                }
+                this.untrustedTicks = 0;
+
+            }
+
+            // GPU-temperature fallback for boards without a real GPU temp sensor.
+            // The two cases we need to distinguish when gpuTemp == 0:
+            //   (a) discrete GPU exists but is currently powered off (issue #66) —
+            //       want the GPU fan to stay at the idle row of the curve, NOT
+            //       ramp up under CPU load.
+            //   (b) board has no usable GPU temp sensor at all (issue #62) — want
+            //       the GPU fan to track CPU temp so it never sits idle while
+            //       the system actually needs cooling.
+            // Platform.HasObservedGpuTemperature() returns true once GPTM has
+            // produced a single non-zero reading since startup, which is the
+            // honest discriminator: a real sensor latches the flag true on its
+            // first valid sample, after which subsequent zero readings are
+            // unambiguously the GPU-powered-off case (a) and the fallback stays
+            // skipped. Without the flag ever latching, case (b) holds and the
+            // fallback fires. This is the corrected version of the v1.4.2 check
+            // — the original `HasGpuTemperatureSensor()` matched against the
+            // configured sensor list, which the default OmenMon.xml always
+            // populated with "GPTM" regardless of hardware (Copilot review #1
+            // on the v1.4.2 PR).
+            if(gpuTemp == 0 && !this.Platform.HasObservedGpuTemperature()) gpuTemp = cpuTemp;
+
+            // Independent level lookups: each fan reacts to its own
+            // component's temperature instead of the global maximum.
+            byte[] cpuFans = GetCurveLevels(cpuTemp);
+            byte[] gpuFans = GetCurveLevels(gpuTemp);
+            byte[] fans = new byte[] { cpuFans[0], gpuFans[1] };
+
+            // Shared-heatpipe assist above 80 °C CPU: below 80 °C the two fans stay
+            // completely independent so an idle GPU fan remains quiet (1700-2300 rpm).
+            // Once the CPU crosses 80 °C under sustained all-core load, the GPU fan
+            // progressively assists across 80..90 °C (up to cpuFan - 4 at 90 °C) so the
+            // second radiator fin stack on the shared heatpipe assembly also rejects heat.
+            if(cpuTemp > 80 && fans[0] > fans[1] + 4) {
+                double assist = Math.Min(1.0, (cpuTemp - 80) / 10.0);
+                int minGpu = (int) Math.Round(fans[1] + assist * ((fans[0] - 4) - fans[1]));
+                if(minGpu > fans[1])
+                    fans[1] = (byte) minGpu;
+            }
+
+            // The CPU floor from above, walked up one step per tick. Applied here rather
+            // than earlier so it can never lower what the curve asked for — if the GPU
+            // side or a still-valid reading wants more air, that wins.
+            if(this.cpuUntrusted) {
+
+                byte target = GetCurveLevels(UntrustedTargetC)[0];
+                if(this.cpuUntrustedLevel == 0)
+                    this.cpuUntrustedLevel = fans[0];
+                if(this.cpuUntrustedLevel < target)
+                    this.cpuUntrustedLevel += UntrustedRampStep;
+                if(this.cpuUntrustedLevel > target)
+                    this.cpuUntrustedLevel = target;
+
+                if(fans[0] < this.cpuUntrustedLevel)
+                    fans[0] = (byte) this.cpuUntrustedLevel;
+
+            }
+
+            // Second line of defence for the GPU, for the case where the die reading is
+            // lost and cannot be recovered (Nvml rebuilds the session on the tick it goes
+            // stale, so getting here means even that failed).
+            //
+            // Platform holds the last die value rather than falling back to GPTM, so the
+            // curve above is running on a number that was true a moment ago and is drifting
+            // out of date. Freezing the fans there would be wrong in the other direction —
+            // if it happened at the end of a load the GPU would be held loud for nothing.
+            //
+            // So: don't hold, and don't drop. Wind down one step — 100 rpm — per tick
+            // towards a floor that still moves real air, and stop there until a
+            // trustworthy reading comes back. The GPU finishes cooling on the way down,
+            // and the floor means even a permanently dead sensor leaves the card
+            // ventilated instead of silently unattended.
+            //
+            // Strictly downward, never upward. A parked GPU at idle is indistinguishable
+            // from a lost sensor from in here, and an earlier version of this treated the
+            // floor as a minimum — which spun an idle machine's GPU fan up to 2500 rpm for
+            // no reason at all. Platform's grace period makes that state rare; this makes
+            // it harmless when it happens anyway.
+            if(!Platform.IsGpuTemperatureTrusted) {
+
+                if(this.gpuUntrustedLevel == 0) {
+
+                    // Enter at whatever the fan is doing right now, and never above it.
+                    // This is a wind-down, not a boost: if the reading is lost while the
+                    // fan is already at its idle floor, the floor is where it stays.
+                    // Getting this wrong once made an idle machine spin up to 2500 rpm
+                    // because a parked GPU looks exactly like a lost sensor.
+                    this.gpuUntrustedLevel = fans[1];
+                    this.gpuUntrustedTarget = Math.Min((int) fans[1], GpuUntrustedFloor);
+
+                    if(this.gpuUntrustedLevel > this.gpuUntrustedTarget) {
+                        Status(Severity.Important,
+                            "GPU temperature untrusted - easing the GPU fan down to "
+                                + this.gpuUntrustedTarget * 100 + " rpm");
+                        Config.ErrorLog("FanProgram.GpuUntrusted", null,
+                            "NVML die reading lost for " + UntrustedGpuGraceDescription
+                                + "; ramping the GPU fan from " + this.gpuUntrustedLevel * 100
+                                + " rpm towards " + this.gpuUntrustedTarget * 100 + " rpm");
+                    } else {
+                        Config.ErrorLog("FanProgram.GpuUntrusted", null,
+                            "NVML die reading lost; GPU fan held at its current "
+                                + this.gpuUntrustedLevel * 100 + " rpm");
+                    }
+
+                }
+
+                if(this.gpuUntrustedLevel > this.gpuUntrustedTarget)
+                    this.gpuUntrustedLevel -= UntrustedRampStep;
+                if(this.gpuUntrustedLevel < this.gpuUntrustedTarget)
+                    this.gpuUntrustedLevel = this.gpuUntrustedTarget;
+
+                // Never below what the curve already asked for: if the CPU side or a
+                // stale-but-hot held value wants more air, it gets it.
+                if(fans[1] < this.gpuUntrustedLevel)
+                    fans[1] = (byte) this.gpuUntrustedLevel;
+
+            } else if(this.gpuUntrustedLevel != 0) {
+
+                this.gpuUntrustedLevel = 0;
+                this.gpuUntrustedTarget = 0;
+                Status(Severity.Notice, "GPU temperature recovered - resuming the GPU curve");
+
+            }
+
+            // Keep GetMaxTemperature populated for thermal-panic and tray icon
+            // (sensors are already up-to-date, no extra EC reads)
+            Platform.GetMaxTemperature(false);
+
+            // Report both temperatures so the user can see independent tracking
+            Status(Severity.Notice,
+                Config.Locale.Get(Config.L_PROG + "T") + " "
+                + "CPU " + Conv.GetString(cpuTemp, 2, 10) + Config.Locale.Get(Config.L_UNIT + "Temperature")
+                + " GPU " + Conv.GetString(gpuTemp, 2, 10) + Config.Locale.Get(Config.L_UNIT + "Temperature") + " "
+                + Config.Locale.Get(Config.L_PROG + "Fans") + " "
+                + Conv.GetString(fans[0], 2, 10) + ", " + Conv.GetString(fans[1], 2, 10));
+
+            // Hysteresis sits between the curve and the rate limiter — the order mature
+            // fan controllers use (FanControl: curve -> response smoothing -> hysteresis
+            // -> output). The two do different jobs and neither substitutes for the
+            // other: EaseDown bounds how *fast* a change happens, hysteresis decides
+            // whether it happens at all. Without it a curve sitting between two levels
+            // re-decides every tick, and EaseDown faithfully walks the fan back and forth
+            // across that level indefinitely.
+            Hysteresis(fans);
+
+            // Slow the way down, never the way up
+            EaseDown(fans);
+
+            // Set fan levels. Do NOT call UpdateFanMode (WMI 0x1A) or UpdateGpuPower
+            // after SetFanLevel on periodic ticks: on 8BCA, SetFanMode resets the EC
+            // fan controller back to the BIOS automatic fan table (0x2F), overriding
+            // the levels just written by SetFanLevel (WMI 0x2E).
+            SetFanLevel(fans);
+
+            // Report success
+            return true;
+
+        }
+#endregion
+
+#region Private Methods
+        // Obtains the fan levels for the given temperature level
+        private byte[] GetFanLevel(byte level) {
+
+            // Retrieve the value from the configuration data
+            return Config.FanProgram[this.Name].Level[level];
+
+        }
+
+        // The curve, evaluated as a line between its points rather than as a staircase.
+        //
+        // This replaced GetTemperatureLevel(), which found the nearest threshold at or
+        // below the temperature and used the level held there as-is. That made the
+        // profile a step function: with points at 61 and 65 °C, everything in between ran
+        // at the level set for 61, and crossing 65 jumped the fan in one move. The only
+        // way to make that sound gradual was to define a great many points close together
+        // — which is why the stock profiles carry eighteen — and a profile with eighteen
+        // handles is one nobody can shape or read.
+        //
+        // Interpolating between two points instead means a profile can be six points and
+        // still change smoothly, because the smoothness comes from the evaluation rather
+        // than from the density of the data. Fewer points, gentler behaviour: the same
+        // change buys both.
+        //
+        // Outside the defined range the end points hold flat, which is the safe reading:
+        // above the last threshold the curve cannot be extrapolated upward without
+        // inventing a fan speed nobody asked for.
+        private byte[] GetCurveLevels(byte temperature) {
+
+            if(this.Levels == null || this.Levels.Count == 0)
+                return new byte[] { 0, 0 };
+
+            int found = this.Levels.BinarySearch(temperature);
+            if(found >= 0)
+                return GetFanLevel(this.Levels[found]);       // exactly on a point
+
+            int above = ~found;                                // first point above
+            if(above <= 0) return GetFanLevel(this.Levels[0]);
+            if(above >= this.Levels.Count)
+                return GetFanLevel(this.Levels[this.Levels.Count - 1]);
+
+            byte tLo = this.Levels[above - 1], tHi = this.Levels[above];
+            byte[] lo = GetFanLevel(tLo), hi = GetFanLevel(tHi);
+
+            int span = tHi - tLo;
+            double f = span > 0 ? (double) (temperature - tLo) / span : 0.0;
+
+            int n = Math.Min(lo.Length, hi.Length);
+            byte[] result = new byte[n];
+            for(int i = 0; i < n; i++)
+                result[i] = (byte) Math.Round(lo[i] + f * (hi[i] - lo[i]));
+
+            return result;
+
+        }
+
+
+        // Resets the state data when terminating a program
+        private void Reset() {
+
+            // Clear the GPU power data
+            this.GpuPowerData = default(BiosData.GpuPowerData);
+
+            // Clear the last fan mode
+            this.LastFanMode = BiosData.FanMode.Default;
+
+            // Note: do not clear the last program name since leaving it
+            // is harmless, and also can be used to show a more meaningful
+            // status message using GetName() even after the program ended
+
+            // Clear the level keys
+            this.Levels = new List<byte>();
+
+        }
+
+        // Set the fan levels to the given parameter
+        private void SetFanLevel(byte[] level) {
+
+            // Clear a stale fan-off latch before writing levels. On some boards
+            // (e.g. 8D07 — issue #39) the GPU fan stays parked because a prior
+            // SetOff(true) is still in effect; SetLevels would then succeed for
+            // the CPU fan but silently no-op for the GPU. Only clear when the
+            // latch is actually set so we don't trample on intentional state
+            // managed by the user / GUI in between program ticks.
+            // Deliberately do NOT clear the "Max Fan" latch here — that is the
+            // safety override used by Thermal Panic, and clearing it on every
+            // tick would defeat it (GuiOp.CheckThermalPanic asserts max only on
+            // the transition into panic, not on every refresh).
+            // Confirmed twice before acting, and logged either way.
+            //
+            // GetOff() is an EC read of the fan-switch register, and EC reads on this
+            // board are demonstrably unreliable under load — the same pass that produces
+            // Monitor.FanLevelDiverged entries. A single spurious `true` here writes the
+            // fan power latch, and toggling that is a candidate for the short dips of
+            // both fans together that a render provokes: they are too brief for the
+            // telemetry to sample, but the microphone hears them.
+            //
+            // A genuine stale latch does not clear itself between two reads two seconds
+            // apart, so requiring two costs nothing real and rejects a one-off misread.
+            // The log line is the point: if these timestamps line up with the dips, this
+            // is the cause; if they do not, it is not, and the guess costs nothing.
+            // Throttle the GetOff() EC read to once every 30 ticks (or immediately when
+            // offSeen is pending confirmation) so the 1 s fan loop does not block on
+            // Global\Access_EC on every tick.
+            if(this.offSeen || --this.offCheckTicks <= 0) {
+                this.offCheckTicks = 30;
+                try {
+                    if(this.Platform.Fans.GetOff()) {
+                        if(this.offSeen) {
+                            Config.ErrorLog("FanProgram.FanOffLatch", null,
+                                "fan-off latch read set twice running; clearing it");
+                            this.Platform.Fans.SetOff(false);
+                            this.offSeen = false;
+                        } else {
+                            this.offSeen = true;
+                            Config.ErrorLog("FanProgram.FanOffLatch", null,
+                                "fan-off latch read set once; waiting for a second read before"
+                                    + " touching the switch");
+                        }
+                    } else {
+                        this.offSeen = false;
+                    }
+                } catch { }
+            }
+
+            // Set the fan levels
+            this.Platform.Fans.SetLevels(level);
+
+            // Note: this does not currently handle the case when both fans are being set to 0
+            // since this is not allowed by the hardware through this call, and would depend
+            // on calling Fans.SetOff(true) instead; not implemented due to possible long-term
+            // implications of the fans being switched off for extended periods of time
+
+        }
+
+        // Sets up a new fan program to be run
+        private bool Setup(string name) {
+
+            // Bail out if referring to a non-existent program
+            if(!Config.FanProgram.ContainsKey(name))
+                return false;
+
+            // Set up the program name
+            this.Name = name;
+
+            // Set up the level keys
+            this.Levels = new List<byte>(Config.FanProgram[this.Name].Level.Keys);
+
+            // Set up the target GPU power data
+            this.GpuPowerData = new BiosData.GpuPowerData(Config.FanProgram[this.Name].GpuPower);
+
+            // Report success
+            return true;
+
+        }
+
+        // Reports fan program status
+        private void Status(Severity severity, string message) {
+
+            // Report status via the callback method
+            Callback(severity, message);
+
+        }
+
+        // Rate-limits downward fan changes, and only downward.
+        //
+        // A fan curve is a step function with no hysteresis, so a temperature crossing a
+        // threshold moves the fan the whole distance between two rows at once. Falling
+        // that abruptly is audible and unlike anything the hardware does on its own; a
+        // laptop coming off load winds down over a minute or so, it does not drop from
+        // 5500 to 1700 rpm between one tick and the next.
+        //
+        // Rising is deliberately not limited. Getting air to a hot part late is the
+        // failure this program exists to prevent, and on 2026-09-07 at 19:26 the CPU went
+        // from 78 °C to 92 in a single twelve-second gap. Anything that delays a rise is
+        // dangerous; delaying a fall costs nothing but a few seconds of extra noise.
+        //
+        // Measured in levels per second rather than per tick, because the tick is not
+        // reliable: under a rendering load the monitor thread has been observed 11 to 27
+        // seconds late. A per-tick step would make the wind-down take a quarter of an hour
+        // exactly when the machine is busy, which is the opposite of what is wanted.
+        // Deadband around the level the fan is already holding: a new target inside the
+        // band is ignored, one outside it is adopted in full.
+        //
+        // Asymmetric, for the same reason everything else here is. Two levels upward is
+        // roughly 3 °C on this curve, so heat still gets air quickly; three levels down
+        // is about 5 °C, which is what stops the fan drifting quietly downward through a
+        // workload that is merely pausing between frames. Hysteresis is why the pause has
+        // to be a real one before the noise changes.
+        //
+        // Deliberately not derived from temperature. The curve is not linear, so a fixed
+        // temperature band would be a different number of levels at 45 °C than at 90 °C,
+        // and the thing the ear objects to is the change in level.
+        // Downward only — there is deliberately no upward counterpart. See Hysteresis().
+        private const int HysteresisDownLevels = 3;
+
+        private readonly int[] hystLevel = new int[2];
+        private bool hystValid;
+
+        private void Hysteresis(byte[] fans) {
+
+            if(!this.hystValid) {
+                for(int i = 0; i < fans.Length && i < this.hystLevel.Length; i++)
+                    this.hystLevel[i] = fans[i];
+                this.hystValid = true;
+                return;
+            }
+
+            for(int i = 0; i < fans.Length && i < this.hystLevel.Length; i++) {
+                int target = fans[i];
+                int held = this.hystLevel[i];
+
+                // Rise fast, drop smooth. Any upward move is taken at once, however
+                // small; only downward moves have to clear a dead band.
+                //
+                // This used to demand HysteresisUpLevels (2) before a rise counted, which
+                // damps the wrong half. The directions do not cost the same: a fan that
+                // lags a rise lets the part run hotter than the curve intended, and on
+                // 2026-09-08 that showed up as a GPU render climbing while the fan sat one
+                // level under the threshold that would have moved it. A fan that lags a
+                // fall costs a few seconds of noise. Hysteresis exists to stop the level
+                // hunting across a boundary, and hunting is a descending problem — it is
+                // EaseDown's territory, so the dead band belongs on that side with it.
+                if(target > held || target <= held - HysteresisDownLevels)
+                    held = target;
+
+                this.hystLevel[i] = held;
+                fans[i] = (byte) held;
+            }
+
+        }
+
+        private void EaseDown(byte[] fans) {
+
+            DateTime now = DateTime.UtcNow;
+
+            if(this.easeAt == DateTime.MinValue) {
+                this.easeAt = now;
+                for(int i = 0; i < fans.Length && i < this.easeLevel.Length; i++)
+                    this.easeLevel[i] = fans[i];
+                return;
+            }
+
+            double seconds = (now - this.easeAt).TotalSeconds;
+            this.easeAt = now;
+
+            // Never negative, and — the part that was wrong — never so large after a long
+            // stall that the limit stops limiting.
+            //
+            // Measured 2026-09-07 20:07: the program tick sat blocked on HardwareLock for
+            // 106 s while the UI thread applied a profile change, so the next call arrived
+            // with seconds = 106, a budget of 53 levels, and the fan fell from 40 to 10 in
+            // one step — precisely the behaviour this method exists to prevent. Elapsed
+            // time is how fast the fan *may* wind down, not permission accumulated while
+            // nothing was running.
+            if(seconds < 0) seconds = 0;
+            int maxDrop = (int) Math.Ceiling(seconds * DescendLevelsPerSecond);
+            if(maxDrop < 1) maxDrop = 1;
+            if(maxDrop > MaxDescendPerUpdate) {
+                if(seconds > StallSeconds)
+                    Config.ErrorLog("FanProgram.EaseDown", null,
+                        "resumed after " + (int) seconds + " s without a pass; limiting the"
+                            + " wind-down to " + MaxDescendPerUpdate + " levels for this one");
+                maxDrop = MaxDescendPerUpdate;
+            }
+
+            for(int i = 0; i < fans.Length && i < this.easeLevel.Length; i++) {
+
+                int target = fans[i];
+                int last = this.easeLevel[i];
+
+                // Up immediately, down at the limited rate
+                int applied = target >= last ? target : Math.Max(target, last - maxDrop);
+
+                this.easeLevel[i] = applied;
+                fans[i] = (byte) applied;
+
+            }
+
+        }
+
+        // One level — 100 rpm — every two seconds. Max to idle, 5500 to 1700 rpm, is then
+        // a little over a minute, which is about what the firmware's own wind-down sounds
+        // like and slow enough that no single step is audible as a step.
+        private const double DescendLevelsPerSecond = 0.5;
+
+        // The most a single pass may take off, whatever the clock says. Three levels is
+        // 300 rpm — a step small enough not to be heard as one — so a fan sitting at
+        // maximum after a stall still walks down instead of dropping.
+        private const int MaxDescendPerUpdate = 3;
+
+        // A gap longer than this means something blocked the control loop rather than the
+        // tick simply being late, and is worth a line in the log
+        private const double StallSeconds = 10;
+
+        // Last level actually commanded per fan, and when — the state EaseDown works from
+        private readonly int[] easeLevel = new int[PlatformData.FanCount];
+        private DateTime easeAt = DateTime.MinValue;
+
+        // One confirming read of the fan-off latch, so a single bad EC answer cannot
+        // write the fan power switch. See SetFanLevel().
+        private bool offSeen;
+        private int offCheckTicks;
+        private DateTime lastCountdownWriteAt = DateTime.MinValue;
+
+        // What this program last told the hardware to do, so a reading can be checked
+        // against an intention rather than against the previous reading.
+        //
+        // Borrowed from nbfc-linux, which compares the fan's current speed with its target
+        // and re-applies its register writes when they diverge by more than 15 % — it
+        // treats a mismatch as evidence the EC did not take the write. SetFanLevel here is
+        // unconditional, so the re-assertion happens on every tick anyway; what was
+        // missing was noticing, and saying so.
+        public byte[] GetCommandedLevels() {
+            byte[] copy = new byte[this.easeLevel.Length];
+            for(int i = 0; i < copy.Length; i++)
+                copy[i] = (byte) (this.easeLevel[i] < 0 ? 0
+                    : this.easeLevel[i] > 255 ? 255 : this.easeLevel[i]);
+            return copy;
+        }
+
+        // Whether a level has ever been commanded — before that, GetCommandedLevels() is
+        // all zeroes and comparing against it would report a divergence that is really
+        // just startup
+        public bool HasCommandedLevels {
+            get { return this.easeAt != DateTime.MinValue; }
+        }
+
+        // Updates the fan manual mode countdown, optionally only if necessary.
+        // Returns true if the countdown was refreshed, or did not need to be.
+        public bool UpdateCountdown(bool forceUpdate = false, bool skipZero = false) {
+            int countdown = 1;
+
+            // If we confirmed a write of FanCountdownExtendInterval (120 s) recently,
+            // skip the per-second EC read of 0x63 until 30 s have elapsed (still leaving
+            // 90 s of margin on the 120 s hardware timer). This keeps the 1 s fan tick
+            // completely free of EC mutex waits between refreshes.
+            if(!forceUpdate && !skipZero && this.lastCountdownWriteAt != DateTime.MinValue) {
+                double elapsed = (DateTime.UtcNow - this.lastCountdownWriteAt).TotalSeconds;
+                int refreshWindow = Math.Max(15,
+                    (Config.FanCountdownExtendInterval - Config.FanCountdownExtendThreshold) / 2);
+                if(elapsed >= 0 && elapsed < refreshWindow)
+                    return true;
+            }
+
+            // Avoid unnecessarily querying the countdown,
+            // if an update is being forced regardless
+            if(!forceUpdate)
+                countdown = this.Platform.Fans.GetCountdown();
+
+            // Optionally, do not update if no countdown
+            if(skipZero && countdown == 0)
+                return true;
+
+            // Skip if there still is enough time to do it
+            // during the next update, unless forced not to
+            if(!forceUpdate
+                && countdown
+                    >= (Config.UpdateProgramInterval
+                        + Config.FanCountdownExtendThreshold)) {
+                this.lastCountdownWriteAt = DateTime.UtcNow;
+                return true;
+            }
+
+            // Write the countdown, and check that the write actually landed.
+            //
+            // Hw.EcExec drops a write on the floor when it cannot take Global\Access_EC
+            // within EcMutexTotalTimeout: the callback never runs, EcSetByte returns
+            // void, and the caller is told nothing. For an ordinary sensor that is a
+            // missing sample. For this register it is a loss of fan control roughly
+            // FanCountdownExtendInterval later, which is how the CPU reached 94 °C on
+            // 2026-09-06 with no error logged anywhere.
+            //
+            // Hw.EcLockTimeoutCount counts exactly those dropped operations, so a delta
+            // across the write says whether it happened without costing an extra read.
+            // SetCountdown's own read-back can also time out and inflate the delta, which
+            // makes this err towards a retry rather than towards a false success — the
+            // right way round for a watchdog, and the write is idempotent.
+            for(int attempt = 1; attempt <= CountdownWriteAttempts; attempt++) {
+
+                int timeouts = Hw.EcLockTimeoutCount;
+                this.Platform.Fans.SetCountdown(Config.FanCountdownExtendInterval);
+
+                if(Hw.EcLockTimeoutCount == timeouts) {
+                    this.lastCountdownWriteAt = DateTime.UtcNow;
+                    if(this.countdownWriteFailures > 0) {
+                        Config.ErrorLog("FanProgram.Countdown", null,
+                            "countdown re-armed after " + this.countdownWriteFailures
+                                + " failed attempt(s); fan control was never handed over");
+                        this.countdownWriteFailures = 0;
+                    }
+                    return true;
+                }
+
+            }
+
+            // Every attempt was dropped. Say so: the fans are now on a timer that nothing
+            // is feeding, and the next pass may not get the lock either.
+            this.countdownWriteFailures += CountdownWriteAttempts;
+            Status(Severity.Important,
+                "Could not re-arm the fan countdown - the firmware may take the fans");
+            Config.ErrorLog("FanProgram.Countdown", null,
+                "could not write the fan countdown in " + CountdownWriteAttempts
+                    + " attempts (" + this.countdownWriteFailures + " consecutive failures); "
+                    + "the firmware takes the fans when it expires");
+
+            return false;
+
+        }
+
+        // Updates the fan mode, optionally only if different than the desired target state
+        private void UpdateFanMode(
+            bool forceUpdate = false,
+            BiosData.FanMode? mode = null) {
+
+            // Set the default mode if empty
+            if(mode == null)
+                mode = Config.FanProgram[this.Name].FanMode;
+
+            // Skip if the settings are the same already, unless forced not to
+            if(forceUpdate
+                || this.Platform.Fans.GetMode() != mode)
+
+                // Set the fan mode
+                this.Platform.Fans.SetMode((BiosData.FanMode) mode);
+
+        }
+
+        // Updates the GPU power, optionally only if different than the desired target state
+        private void UpdateGpuPower(
+            bool forceUpdate = false,
+            BiosData.GpuPowerData? power = null) {
+
+            // Set the default GPU power data if empty
+            if(power == null)
+                power = this.GpuPowerData;
+
+            // Skip if the settings are the same already, unless forced not to
+            if(forceUpdate
+                || this.Platform.System.GetGpuCustomTgp() != this.GpuPowerData.CustomTgp
+                || this.Platform.System.GetGpuPpab() != this.GpuPowerData.Ppab)
+
+                // Set the GPU power
+                this.Platform.System.SetGpuPower((BiosData.GpuPowerData) power);
+
+        }
+
+#endregion
+    }
+
+}

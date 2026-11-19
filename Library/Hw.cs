@@ -1,0 +1,560 @@
+  //\\   OmenMon: Hardware Monitoring & Control Utility
+ //  \\  Copyright © 2023 Piotr Szczepański * License: GPL3
+     //  https://omenmon.github.io/
+
+using System;
+using System.Diagnostics;
+using System.Threading;
+using System.Collections.Generic;
+using Microsoft.Win32;
+using OmenMon.Hardware.Ec;
+using OmenMon.Hardware.Bios;
+
+namespace OmenMon.Library {
+
+    // Implements hardware interaction routines
+    // reusable between the CLI and the GUI
+    public static class Hw {
+
+#region Initialization & Termination
+        // State flag
+        public static bool IsInitialized { get; private set; }
+
+        // Initializes the helper class
+        public static void Initialize() {
+
+            // Only do it once
+            if(!IsInitialized) {
+
+                // Initialization is currently handled individually
+                // by calling BiosInit() and EcInit() when required
+
+                // Done
+                IsInitialized = true;
+
+            }
+
+        }
+
+        // Closes the hardware
+        public static void Close() {
+
+                // Close the BIOS session, if established
+                if(Bios != null)
+                try {
+                    Bios.Close();
+                } catch { }
+
+                // Close the embedded controller, if loaded
+                if(Ec != null)
+                try {
+                    Ec.Close();
+                } catch { }
+
+        }
+#endregion
+
+#region BIOS
+        // BIOS Control Interface
+        public static IBiosCtl Bios;
+
+        // Prepares the BIOS for use
+        public static void BiosInit() {
+            Bios = BiosInterface();
+            if(Bios == null || !Bios.IsInitialized)
+                App.Exit(Config.ExitStatus.ErrorBios);
+        }
+
+        // Returns the BIOS interface
+        public static IBiosCtl BiosInterface() {
+            var bios = BiosCtl.Instance;
+            if(bios == null) {
+                App.Error("ErrBiosNull");
+                return null;
+            }
+            bios.Initialize();
+            if(bios.IsInitialized) {
+                return bios;
+            } else {
+                App.Error("ErrBiosInit");
+                bios.Close();
+            }
+            return null;
+        }
+
+        // Performs BIOS operations
+        public static void BiosExec(Action<IBiosCtl> callback, IBiosCtl bios) {
+            callback(bios);
+        }
+
+        // Performs BIOS operations and returns a result
+        public static TResult BiosExec<TResult>(Func<IBiosCtl,TResult> callback, IBiosCtl bios) {
+            return (TResult) callback(bios);
+        }
+
+        // Prepares the BIOS for use and then performs operations
+        public static void BiosExec(Action<IBiosCtl> callback) {
+            using(Bios = BiosInterface()) {
+                if(Bios != null && Bios.IsInitialized) {
+                    BiosExec(callback, Bios);
+                }
+            }
+        }
+
+        // Prepares the BIOS for use and then performs operations that return a result
+        public static TResult BiosExec<TResult>(Func<IBiosCtl,TResult> callback) {
+            using(Bios = BiosInterface()) {
+                if(Bios != null && Bios.IsInitialized) {
+                    return (TResult) BiosExec(callback, Bios);
+                } else {
+                    return default(TResult);
+                }
+            }
+        }
+
+        // Performs a BIOS operation and returns a numeric (possibly an enumerated or an array) result
+        public static TResult BiosGet<TResult>(Func<TResult> biosMethod) {
+            try {
+                return Hw.BiosExec<TResult>(bios => {
+                    return (TResult) (object) biosMethod();
+                }, Hw.Bios);
+            } catch {
+                return default(TResult);
+            }
+        }
+
+        // Performs a BIOS operation and returns a struct result
+        public static TResult BiosGetStruct<TResult>(Func<TResult> biosMethod) where TResult : struct {
+            try {
+                return Hw.BiosExec<TResult>(bios => {
+                    return (TResult) biosMethod();
+                }, Hw.Bios);
+            } catch {
+                return default(TResult);
+            }
+        }
+
+        // Sets a BIOS toggle to a Boolean value passed as a parameter
+        public static void BiosSet(Action<bool> biosMethod, bool flag) {
+            Hw.BiosExec(bios => {
+                // Send the command to the BIOS
+                biosMethod(flag);
+            }, Hw.Bios);
+        }
+
+        // Sets a BIOS setting to a numerical or enumerated value passed as a parameter
+        public static void BiosSet<T>(Action<T> biosMethod, T param) {
+            Hw.BiosExec(bios => {
+                // Send the command to the BIOS
+                biosMethod((T) param);
+            }, Hw.Bios);
+
+        }
+
+        // Sets the BIOS LED animation table based on the value passed as a parameter
+        public static void BiosSetStruct(Action<BiosData.AnimTable> biosMethod, BiosData.AnimTable animTable) {
+            Hw.BiosExec(bios => {
+                // Send the updated animation table to the BIOS
+                biosMethod(animTable);
+            }, Hw.Bios);
+        }
+
+        // Sets the BIOS keyboard backlight color table based on the value passed as a parameter
+        public static void BiosSetStruct(Action<BiosData.ColorTable> biosMethod, BiosData.ColorTable colorTable) {
+            Hw.BiosExec(bios => {
+                // Send the updated color table to the BIOS
+                biosMethod(colorTable);
+            }, Hw.Bios);
+        }
+
+        // Sets the BIOS fan table based on the value passed as a parameter
+        public static void BiosSetStruct(Action<BiosData.FanTable> biosMethod, BiosData.FanTable fanTable) {
+            Hw.BiosExec(bios => {
+                // Send the updated fan table to the BIOS
+                biosMethod(fanTable);
+            }, Hw.Bios);
+        }
+
+        // Sets the BIOS GPU power settings based on the value passed as a parameter
+        public static void BiosSetStruct(Action<BiosData.GpuPowerData> biosMethod, BiosData.GpuPowerData gpuPowerData) {
+            Hw.BiosExec(bios => {
+                // Not a mistake: seems this need to run twice to take effect,
+                // at least in certain scenarios (such as switching PPAB off)
+                biosMethod(gpuPowerData);
+                Thread.Sleep(Config.GpuPowerSetInterval);
+                biosMethod(gpuPowerData);
+            }, Hw.Bios);
+        }
+#endregion
+
+#region Embedded Controller
+        // Embedded Controller interface
+        public static IEmbeddedController Ec;
+
+        // Set on threads whose EC traffic is periodic and recoverable (the GUI background
+        // monitor, the calibration worker): an EC mutex acquisition timeout there degrades
+        // to a skipped operation — callers keep the last good reading and retry next tick —
+        // instead of a modal error box. Raised from a non-UI thread, that box would also
+        // stall the thread's safety duties (thermal panic) for as long as it stayed open,
+        // and it is exactly the once-per-startup / per-calibration noise of issue #94.
+        // Thread-static so user-initiated actions on the UI thread stay loud.
+        [ThreadStatic] public static bool EcLockQuiet;
+
+        // Running total of EC mutex acquisition timeouts in this process, surfaced in the
+        // diagnostic report so contention with other EC users (HP Omen Gaming Hub, the
+        // kernel ACPI driver) shows up in field reports without a debugger attached.
+        private static int ecLockTimeoutCount;
+        public static int EcLockTimeoutCount { get { return ecLockTimeoutCount; } }
+
+        // Processes known to take Global\Access_EC. Naming the competitor in the log turns
+        // "failed to acquire the EC lock" from an unexplained pop-up into something
+        // actionable — on this hardware it is almost always HP's own Omen Gaming Hub
+        // background service, which polls the EC on its own schedule.
+        private static readonly string[] EcContenderNames = {
+            "OmenCommandCenterBackground", "OMEN Gaming Hub", "OmenCap", "HPOmen",
+            "HP.Omen.Command.Center", "HPSystemEventUtility", "HPSysInfoCLI",
+            "LibreHardwareMonitor", "OpenHardwareMonitor", "HWiNFO64", "HWiNFO32",
+            "AIDA64", "RTSS", "MSIAfterburner", "SpeedFan", "NBFC", "FanControl"
+        };
+
+        // Lists the EC-using processes running right now, plus any second OmenMon
+        private static string EcContenders() {
+            try {
+                List<string> found = new List<string>();
+                Process self = Process.GetCurrentProcess();
+                foreach(Process p in Process.GetProcesses()) {
+                    try {
+                        if(p.Id == self.Id)
+                            continue;
+                        if(string.Equals(p.ProcessName, self.ProcessName, StringComparison.OrdinalIgnoreCase)) {
+                            found.Add(p.ProcessName + "(pid " + p.Id + ", second instance)");
+                            continue;
+                        }
+                        // Substring, not exact match. Exact matching reported "none
+                        // detected" on a machine that was in fact running OmenCap and
+                        // HPSystemEventUtilityBackground — HP's own EC software — because
+                        // the list held "HPOmenCap" and "HPSystemEventUtility". That false
+                        // negative led straight to the wrong conclusion, that OmenMon was
+                        // only ever contending with itself.
+                        foreach(string name in EcContenderNames)
+                            if(p.ProcessName.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0
+                                || name.IndexOf(p.ProcessName, StringComparison.OrdinalIgnoreCase) >= 0) {
+                                found.Add(p.ProcessName + "(pid " + p.Id + ")");
+                                break;
+                            }
+                    } catch { }
+                }
+                return found.Count == 0 ? "none detected" : string.Join(", ", found);
+            } catch {
+                return "?";
+            }
+        }
+
+        // Acquires Global\Access_EC, retrying across a bounded total budget.
+        //
+        // A single Request(EcMutexTimeout) attempt turned any moment of contention into a
+        // modal error. In practice the lock is held far more often by OmenMon's own
+        // monitor thread mid-batch than by another application — the first reported
+        // timeout on board 8BCA logged "other EC users: none detected" — and Ec.cs's
+        // read backoff Wait()s while holding it, so one slow sensor pass can outlast the
+        // whole window. A batch finishes well inside the budget, so retrying turns what
+        // was an error dialog into a pause the user does not notice.
+        //
+        // The per-attempt timeout stays EcMutexTimeout, so a caller that genuinely cannot
+        // get the lock still gives up in bounded time rather than hanging the UI thread.
+        private static bool EcRequest(IEmbeddedController ec) {
+            int waited = 0;
+            while(true) {
+                if(ec.Request(Config.EcMutexTimeout))
+                    return true;
+                waited += Config.EcMutexTimeout;
+                if(waited >= Config.EcMutexTotalTimeout)
+                    return false;
+
+                // Yield briefly so the holder can finish and release
+                Thread.Sleep(EcRequestRetryDelay);
+                waited += EcRequestRetryDelay;
+            }
+        }
+
+        private const int EcRequestRetryDelay = 15;
+
+        // Records an EC mutex acquisition timeout and reports it unless the
+        // current thread opted into quiet (retry-next-tick) handling
+        private static void EcLockTimeout() {
+            int count = Interlocked.Increment(ref ecLockTimeoutCount);
+
+            // Log every timeout the user is shown, and a sample of the quiet ones. The
+            // quiet path can fire once per monitor tick while another process holds the
+            // lock, so logging all of them would bury everything else in the file.
+            if(!EcLockQuiet || count <= 5 || count % 25 == 0)
+                Config.ErrorLog("Hw.EcLockTimeout", null,
+                    "gave up after " + Config.EcMutexTotalTimeout + " ms of retries ("
+                        + Config.EcMutexTimeout + " ms per attempt) for Global\\Access_EC"
+                        + "; timeout #" + count
+                        + (EcLockQuiet ? " (quiet, retried on the next tick)" : " (user-visible)")
+                        + "; other EC users: " + EcContenders());
+
+            if(!EcLockQuiet)
+                App.Error("ErrEcLock");
+        }
+
+        // Prepares the embedded controller for use
+        public static void EcInit() {
+            Ec = EcInterface();
+            if(Ec == null || !Ec.IsInitialized)
+                App.Exit(Config.ExitStatus.ErrorEc);
+            }
+
+        // Returns the Embedded Controller interface
+        public static IEmbeddedController EcInterface() {
+            var ec = EmbeddedController.Instance;
+            if(ec == null) {
+                App.Error("ErrEcNull");
+                return null;
+            }
+            ec.Initialize();
+            if(ec.IsInitialized) {
+                return ec;
+            } else {
+                App.Error("ErrEcInit");
+                ec.Close();
+            }
+            return null;
+        }
+
+        // Runs operations while the Embedded Controller is locked for exclusive use
+        public static void EcExec(Action<IEmbeddedController> callback, IEmbeddedController ec) {
+            if(EcRequest(ec)) {
+                try {
+                    callback(ec);
+                } finally {
+                    ec.Release();
+                }
+            }
+            else {
+                EcLockTimeout();
+            }
+        }
+
+        // Runs operations while the Embedded Controller is locked for exclusive use and returns a result
+        public static TResult EcExec<TResult>(Func<IEmbeddedController,TResult> callback, IEmbeddedController ec) {
+            if(EcRequest(ec)) {
+                try {
+                    return (TResult) callback(ec);
+                } finally {
+                    ec.Release();
+                }
+            } else {
+                EcLockTimeout();
+                return default(TResult);
+            }
+        }
+
+        // Prepares the Embedded Controller and then runs operations while it is locked for exclusive use
+        public static void EcExec(Action<IEmbeddedController> callback) {
+            using(Ec = EcInterface()) {
+                if(Ec != null) {
+                    EcExec(callback, Ec);
+                }
+            }
+        }
+
+        // Runs a batch of EC reads/writes under a single EC open + mutex hold (A3, issue #86).
+        // The regular monitoring path previously had every EcComponent.Update() take and
+        // release the cross-process Global\Access_EC mutex on its own, so a single monitor
+        // tick churned the lock once per sensor — multiplying the collision window with the
+        // kernel ACPI EC driver that #88's backoff fights. Wrapping a tick's reads in this
+        // method holds the lock for the whole batch; the named mutex is reentrant on the
+        // owning thread, so the inner per-register EcGetByte/EcGetWord calls (which acquire
+        // via the (callback, Hw.Ec) overload) become uncontended re-entries rather than
+        // fresh cross-process acquisitions.
+        //
+        // Reuse the persistently-initialized singleton (opened once via EcInit()) rather than
+        // opening it in a using() scope: Hw.Ec is the same instance the non-batched read path
+        // (EcGetByte/EcGetWord) operates on directly, so disposing it here would Close() Ring0
+        // + the Global\Access_EC mutex out from under the very next read outside the batch.
+        //
+        // Returns true if the body ran under the EC lock; false if the EC was unavailable or
+        // the lock could not be acquired this tick, so the caller can fall back to updating
+        // any non-EC (e.g. WMI-backed) sensors directly.
+        public static bool EcExecBatch(Action body) {
+            if(body == null)
+                return false;
+            if(Ec == null || !Ec.IsInitialized)
+                Ec = EcInterface();
+            if(Ec == null || !Ec.IsInitialized)
+                return false;
+            if(EcRequest(Ec)) {
+                try {
+                    body();
+                } finally {
+                    Ec.Release();
+                }
+                return true;
+            }
+            EcLockTimeout();
+            return false;
+        }
+
+        // Prepares the Embedded Controller, runs operations while it is locked for exclusive use, and returns a result
+        public static TResult EcExec<TResult>(Func<IEmbeddedController,TResult> callback) {
+            using(Ec = EcInterface()) {
+                if(Ec != null) {
+                    return (TResult) EcExec(callback, Ec);
+                } else {
+                    return default(TResult);
+                }
+            }
+        }
+
+        // Retrieves the value of a specific byte-sized register
+        public static byte EcGetByte(byte register) {
+            return Hw.EcExec<byte>(ec => {
+                return ec.ReadByte(register);
+            }, Hw.Ec);
+        }
+
+        // Prints out the value of a little-endian word stored in two consecutive registers
+        public static ushort EcGetWord(byte register) {
+            return Hw.EcExec<ushort>(ec => {
+                return ec.ReadWord(register);
+            }, Hw.Ec);
+        }
+
+        // Performs an Embedded Controller operation
+        // and returns a byte-sized numeric (possibly an enumerated) result
+        public static TResult EcGet<TResult>(byte register) {
+            return (TResult) (object) EcGetByte(register);
+        }
+
+        // Sets the value of a specific byte-sized register
+        public static void EcSetByte(byte register, byte value) {
+            Hw.EcExec(ec => {
+                ec.WriteByte(register, value);
+            }, Hw.Ec);
+        }
+
+        // Sets the value of a little-endian word stored in two consecutive registers
+        public static void EcSetWord(byte register, ushort value) {
+            Hw.EcExec(ec => {
+                ec.WriteWord(register, value);
+            }, Hw.Ec);
+        }
+
+        // Sets the value of a specific byte-sized register
+        public static void EcSet(byte register, byte value) {
+            EcSetByte(register, value);
+        }
+
+        // Sets the value of a little-endian word stored in two consecutive registers
+        public static void EcSet(byte register, ushort value) {
+            EcSetWord(register, value);
+        }
+
+        // Reads all 256 bytes of the Embedded Controller atomically under a single mutex lock.
+        // This is significantly faster and prevents lock-timeout spam and inconsistencies compared
+        // to doing 256 individual EcGetByte calls.
+        public static byte[] EcDump() {
+            return Hw.EcExec<byte[]>(ec => {
+                byte[] data = new byte[256];
+                for(int r = 0; r < 256; r++)
+                    data[r] = ec.ReadByte((byte) r);
+                return data;
+            }, Hw.Ec) ?? new byte[256];
+        }
+#endregion
+
+#region Graphics
+        // nVidia multiplexer states
+        public enum NvMuxState : int {
+            Optimus  = 0x00000001,  // Software-switching
+            Discrete = 0x00000002   // Discrete GPU only
+        }
+
+        // Retrieves the current nVidia multiplexer state from the Registry, or null
+        // when the system has no such key/value. The mux registry key only exists on
+        // NV-Optimus laptops, so on an AMD/Intel-only or non-mux machine OpenSubKey
+        // returns null and GetValue could also be absent — the previous unconditional
+        // dereference threw a NullReferenceException there (C1). Callers compare the
+        // result against NvMuxState.Discrete, which a null cleanly fails.
+        public static NvMuxState? NvMuxGetState() {
+            using(RegistryKey key = Registry.LocalMachine.OpenSubKey(Config.RegMuxKey, true)) {
+                object value = key?.GetValue(Config.RegMuxValue);
+                if(value == null)
+                    return null;
+                return (NvMuxState) (int) value;
+            }
+        }
+#endregion
+
+#region Tasks
+        // Returns the status of a specific task
+        public static bool TaskGet(Config.TaskId task) {
+            return Os.HasTask(Config.TaskFolder, Config.Task[task][0]);
+        }
+
+        // Installs or removes a specific task
+        public static void TaskSet(Config.TaskId task, bool flag) {
+            using WmiEvent wmiEvent = new WmiEvent();
+            string taskName = Enum.GetName(typeof(Config.TaskId), task);
+
+            // Remove the given task first, regardless
+            try {
+
+                // Delete the task from the Task Scheduler
+                Os.DeleteTask(Config.TaskFolder, Config.Task[task][0]);
+
+            } catch { }
+
+            // The GUI task simply uses a logon trigger,
+            // so no further steps are needed for removal
+            if(task != Config.TaskId.Gui) {
+
+                    // Remove WMI event triggers for the task
+                    wmiEvent.DeleteBinding(Config.AppName + taskName + Config.WmiEventSuffixFilter, WmiEvent.BindingLookup.ByFilter);
+                    wmiEvent.DeleteConsumer(Config.AppName + taskName + Config.WmiEventSuffixConsumer);
+                    wmiEvent.DeleteFilter(Config.AppName + taskName + Config.WmiEventSuffixFilter);
+
+                }
+
+            // If asked to add the task
+            if(flag) {
+
+                try {
+
+                    // Every task is added to the Task Scheduler first of all
+                    Os.AddTask(
+                        Config.TaskFolder, Config.Task[task][0], "", // Executable path, defaults to current process if empty
+                        Config.Task[task][1], task == Config.TaskId.Gui ? true : false); // Logon trigger for the GUI task only
+
+                } catch { }
+
+                // The GUI task, triggered by logon, does not have any extra steps
+                if(task != Config.TaskId.Gui) {
+
+                    // Other tasks depend on the WMI event filter binding
+                    wmiEvent.CreateBinding(
+
+                        wmiEvent.CreateConsumer(new Dictionary<string, object>() {
+                            ["CommandLineTemplate"] = Config.TaskRunPath + " "
+                                + Config.TaskRunArgs + "\"" + Config.AppName + " " + taskName + "\"",
+                            ["ExecutablePath"] = Config.TaskRunPath,
+                            ["Name"] = Config.AppName + taskName + Config.WmiEventSuffixConsumer }),
+
+                        wmiEvent.CreateFilter(new Dictionary<string, object>() {
+                                ["EventNameSpace"] = Config.Task[task][2],
+                                ["Query"] = Config.Task[task][3].Replace("\\", "\\\\"), // The WMI query needs double backlashes
+                                ["QueryLanguage"] = Config.WmiQueryLang,
+                                ["Name"] = Config.AppName + taskName + Config.WmiEventSuffixFilter }));
+
+                }
+
+            }
+
+        }
+#endregion
+
+    }
+
+}
