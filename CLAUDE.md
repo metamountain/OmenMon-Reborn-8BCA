@@ -15,7 +15,7 @@ the method is the transferable part.
 | Board / ProductId | **`8BCA`** |
 | CPU | AMD Ryzen 7 7840HS (Zen 4, Phoenix, family 19h, 8C/16T, 54 W) |
 | BIOS | **F.32** (was F.31; the fan findings hold across both) |
-| OS | Windows 11 Home 26100 |
+| OS | Windows 11 Home 26300 (26H2 since 2026-11-20; was 26100) |
 | Install | `C:\Program Files\OmenMon Reborn 8BCA` |
 | Source | `D:\_Code\OmenMon-Reborn-8BCA` |
 
@@ -197,6 +197,88 @@ The self-contention is real too and still worth knowing: the monitor thread hold
 `Wait()`s while holding it. `Hw.EcRequest()` now retries across `EcMutexTotalTimeout`
 (2500 ms) instead of making a single `EcMutexTimeout` attempt.
 
+### HP's `OmenCap` service fights OmenMon for the fans — and stops them
+
+Found 2026-11-20 (Windows 11 26H2, build 26300, installed that morning). Symptom: fans
+**audibly stopped after a reboot**, and after every OmenMon start `GetFanLevel` (`0x2D`)
+returned `0/0` for 20-65 s, then BIOS table row `#00` (`20/23`), before the commanded
+level took. Once a 13 s genuine stop was measured mid-run (BIOS `0/0`, built-in mic −56
+vs −47 dBFS) while the BIOS trace showed OmenMon sending nothing but `SetFanLevel 41/22`.
+
+Evidence that it is `HPOmenCap` (`OmenCap.exe`, DriverStore
+`hpomencustomcapcomp.inf`), not OmenMon:
+
+- With OmenMon killed, EC `0x63` (countdown) kept being rewritten to `120` — another
+  process was running its own fan watchdog.
+- With OmenMon killed, `-Bios FanLevel=N,N` for N = 15…58 had **no effect** (read-back
+  `0/0`, mic flat); `FanMode=Default` did not restart the fans either.
+- Four OmenMon restarts with OmenCap running: every one showed the `0/0` phase. One
+  restart with `HPOmenCap` stopped (18:47:53): first read-back `41/22`, then 41-43/22
+  continuously for 2.5 min, mic steady. **One clean run against four bad ones** — strong,
+  not yet a long-run statistic.
+- `HPSystemEventUtility*` was stopped in the same run; MSI Afterburner kept running and
+  is therefore not the culprit.
+
+Remedy (needs admin, not applied by the assistant — the user does it):
+`Stop-Service HPOmenCap -Force; Set-Service HPOmenCap -StartupType Disabled`.
+Revert: `Set-Service HPOmenCap -StartupType Automatic; Start-Service HPOmenCap`.
+
+Related, same session:
+- The scheduled task `OmenMon` (autostart) had been **Disabled**, so nothing but OmenCap
+  owned the fans after boot. Re-enabled.
+- OmenMon's own read-back column (`fantrace.csv`, telemetry) can be **stale for 10+ s**:
+  it showed `39/22` while a separate `-Bios FanLevel` read `0/0`. Use the BIOS trace or a
+  fresh CLI read when timing matters.
+- `fantrace.csv` has **no date column** and spans days; filter by date before joining it
+  against anything, or old rows with the same `HH:mm:ss` creep in.
+- Running `-Ec`/`-Bios` CLI reads in a loop alongside the GUI produces `ErrEcLock`
+  timeouts and is itself a contender; `-Diag` hung outright with the GUI running.
+- The USB microphone here (C-Media `0D8C:0134`) delivers digital silence (−96.6 dB RMS,
+  both channels, even at the fan exhaust and with a speaker sweep). Use the built-in
+  array (`Microphone Array (AMD Audio Device)`); `micmeter.ps1` uses the default device,
+  so pick the device explicitly.
+
+### A firmware PPAB flip stops the fans too — re-assert immediately
+
+Found 2026-11-20, the first evening with `HPOmenCap` stopped (clean from 18:47 to 20:06).
+Two fan collapses under CPU load (77-87 °C), at 20:06:10 (`GetFanLevel` `0/0`) and
+20:27:10 (`2/2`). Neither was a bad read: the next reads climbed through `13/3` and
+`37/3`, i.e. the fans were spinning back up. Both times `GetGpuPower` (`0x21`) showed
+**byte 1 (PPAB) flipping 1 → 0 → 1** across the same five seconds:
+
+```
+20:06:11  0x21 out=[01 00 01 00]   20:06:16  out=[01 01 01 00]
+20:27:06  0x21 out=[01 00 01 00]   20:27:11  out=[01 01 01 00]
+```
+
+OmenMon sent **no** `0x22` SetGpuPower, `0x29` or `0x1A` the whole evening, only
+`0x2E`, so the platform toggles PPAB on its own, plausibly by shifting the shared CPU/GPU
+power budget when the CPU runs hot. The first guess was that the GPU power change itself
+resets the fan controller, as `SetCpuPower` does. The trigger test below disproved that. Two events, an exact match, not yet a
+statistic. MSI Afterburner was running and has not been ruled out.
+
+The next `SetFanLevel` restores the fans, but the fan tick was arriving every 4-5 s, so
+fans were stopped or spinning up for up to ~10 s. **Remedy:** `GuiMonitor.Sample()`
+(full pass, already under `HardwareLock`) calls `FanProgram.ReassertLevels()` when a fan
+reads more than `MaxPlausibleLevelDrop` below the command, or when `GpuPpab` differs from
+the previous snapshot. That re-sends the last commanded levels at once, at most every
+2 s. Each one logs `FanProgram.Reassert: re-sent fan levels X/Y immediately (<reason>)`
+to `OmenMon-error.log`. **That line is how to tell it happened**: the dip itself should
+now be ~1 s and may not be audible. Only active while the main window is open (the
+light pass reads neither fans nor PPAB); otherwise the regular fan tick re-asserts.
+**Tested 2026-11-20 20:45 and 20:51, and the causal reading did not hold up.**
+`tmp/ppab-trigger.ps1` flipped PPAB with `-Bios Gpu=Max` / `Gpu=Min` (WMI `0x22`) under
+CPU load (80 °C, fans 45/25) while sampling `GetFanLevel` every 0.25 s. **Neither flip
+moved the fans at all**, not even in the ~2 s before the re-assert fired (logged at
+20:51:43 and 20:51:56). So a PPAB change written over WMI does *not* reset the fan
+controller. The evening's flips are better read as a **co-symptom**: some firmware event
+under CPU heat changes the power budget *and* drops the fans, and PPAB is merely the part
+of it that `0x21` makes visible. What that event is remains open. Keep the PPAB trigger
+anyway, since it costs one redundant write. The divergence trigger is the one that
+answers a real collapse. Whether it shortens one is still unconfirmed: that needs the next
+genuine dip, with `OMENMON_BIOSTRACE=1` set (it is not persistent, and the instance
+started at 20:33 ran without it).
+
 ### The CPU die read has its own contender: any other monitoring tool
 
 `PawnIoAmd` reads `THM_TCON_CUR_TMP` through the cross-process
@@ -328,6 +410,7 @@ that support them are still online and still persuasive.
 | `FanLevelReg1` should be `0x14` instead of `0x12` | Same inference | Moot — the EC fan-level path is not used. |
 | CPU temperature was fixed by disabling `CPUT` | 6 idle samples reading 44-45 against a die of 41 | Burn-in disproved it: 44 °C reported while the die was at 66.8, and 33 while the die was at 48.5. **Idle agreement is not agreement.** |
 | `GPTM` (EC `0xB7`) is a valid GPU sensor | It moved a little, the idle value looked right, and the fan curves appeared to work | A 79 W GPU load: die 34 → 76 °C, `GPTM` 26 → 33 °C, gap widening from 25 to 42 °C. Same trap as the row above, found only because the user asked whether the GPU had ever been checked. It had not. |
+| A PPAB change resets the fans to 0 | Both collapses on 2026-11-20 coincided exactly with `0x21` byte 1 flipping 1 → 0 → 1 | Flipping PPAB deliberately (`-Bios Gpu=Max`/`Min`) under the same load, sampled at 4 Hz: no change at all. Co-symptom, not cause. |
 
 ## Traps that cost real time
 

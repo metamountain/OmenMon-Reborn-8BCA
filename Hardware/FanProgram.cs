@@ -899,6 +899,44 @@ namespace OmenMon.Hardware.Platform {
             get { return this.easeAt != DateTime.MinValue; }
         }
 
+        // Re-sends the last commanded levels immediately, outside the regular fan tick.
+        //
+        // Measured 2026-11-20 (OmenCap stopped, OmenMon sending nothing but SetFanLevel):
+        // twice the firmware itself toggled PPAB (GetGpuPower 0x21, byte 1: 1 -> 0 -> 1)
+        // with the CPU at 77-87 °C, and both times GetFanLevel collapsed to 0/0 resp. 2/2
+        // in the same seconds. The next SetFanLevel restored the fans, but the fan tick
+        // was arriving every 4-5 s rather than every 1 s, so the fans sat stopped or
+        // spinning up for up to ~10 s. The monitor pass that notices the collapse already
+        // holds HardwareLock, so it can re-assert on the spot instead of waiting.
+        // Not cause and effect: flipping PPAB deliberately over WMI 0x22 (same evening,
+        // 4 Hz sampling) did not move the fans at all. The PPAB flip is a co-symptom of
+        // whatever firmware event drops them; the divergence check is the real trigger.
+        //
+        // Writes the same values the program just sent - harmless if the trigger was a
+        // bad read. Must be called under HardwareLock. Rate-limited so a persistent fault
+        // (e.g. OmenCap holding the fans) cannot turn it into a write loop.
+        public bool ReassertLevels(string reason) {
+            if(!this.IsEnabled || !HasCommandedLevels)
+                return false;
+            DateTime now = DateTime.Now;
+            if((now - this.lastReassertAt).TotalSeconds < ReassertMinIntervalSec)
+                return false;
+            this.lastReassertAt = now;
+            byte[] level = GetCommandedLevels();
+            try {
+                this.Platform.Fans.SetLevels(level);
+                Config.ErrorLog("FanProgram.Reassert", null,
+                    "re-sent fan levels " + level[0] + "/" + level[1] + " immediately (" + reason + ")");
+                return true;
+            } catch(Exception e) {
+                Config.ErrorLog("FanProgram.Reassert", e);
+                return false;
+            }
+        }
+
+        private const double ReassertMinIntervalSec = 2;
+        private DateTime lastReassertAt = DateTime.MinValue;
+
         // Updates the fan manual mode countdown, optionally only if necessary.
         // Returns true if the countdown was refreshed, or did not need to be.
         public bool UpdateCountdown(bool forceUpdate = false, bool skipZero = false) {

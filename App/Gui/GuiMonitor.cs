@@ -407,6 +407,7 @@ namespace OmenMon.AppGui {
                 } catch { }
 
                 MonitorSnapshot last = this.CurrentSnapshot;
+                string reassertReason = null;
                 if(last != null && last.HasFanSys && !s.Off) {
                     for(int i = 0; i < PlatformData.FanCount; i++) {
                         if(s.FanSpeed[i] == 0 && last.FanSpeed[i] > 0) s.FanSpeed[i] = last.FanSpeed[i];
@@ -454,6 +455,8 @@ namespace OmenMon.AppGui {
                             Config.ErrorLog("Monitor.FanLevelDiverged", null,
                                 "fan " + i + " read " + s.FanLevel[i] + " while commanded "
                                     + commanded[i] + " (reading kept; cause unresolved)");
+                            reassertReason = "fan " + i + " read " + s.FanLevel[i]
+                                + " while commanded " + commanded[i];
                         }
                     }
                     if(s.Countdown == 0 && last.Countdown > 0) s.Countdown = last.Countdown;
@@ -475,6 +478,17 @@ namespace OmenMon.AppGui {
                 s.GpuPower     = sys.GetGpuPower();        // …and cached for the GPU menu
                 s.Throttling   = sys.GetThrottling();
                 s.HasFanSys = true;
+
+                // A PPAB flip that OmenMon did not command resets the fan controller on
+                // 8BCA (2026-11-20, see FanProgram.ReassertLevels). Re-send the levels now
+                // rather than on the next fan tick, which can be seconds away.
+                if(reassertReason == null && last != null && last.HasFanSys
+                    && s.GpuPpab != last.GpuPpab)
+                    reassertReason = "PPAB changed " + last.GpuPpab + " -> " + s.GpuPpab;
+                if(reassertReason != null) {
+                    try { op.Program.ReassertLevels(reassertReason); }
+                    catch(Exception e) { Config.ErrorLog("Monitor.Reassert", e); }
+                }
 
                 // Rolling diagnostic CSV — one row per full pass. Sensor dropouts are
                 // bridged with the last plausible value so the log is analysable; a
